@@ -22,6 +22,17 @@ import RunwayQueue from "../components/content/RunwayQueue.astro";
 import ShellLab from "../components/content/ShellLab.astro";
 import PipeRoles from "../components/content/PipeRoles.astro";
 import ParseLayers from "../components/project-art/ParseLayers.astro";
+import GenerationReplay from "../components/content/GenerationReplay.astro";
+import AgentBrain from "../components/content/AgentBrain.astro";
+import BreedStep from "../components/content/BreedStep.astro";
+import TrapMap from "../components/content/TrapMap.astro";
+import OutcomeChart from "../components/content/OutcomeChart.astro";
+import enaGens from "../content/projects/evolutionary-neural-agents/generations.json";
+import enaGensUrl from "../content/projects/evolutionary-neural-agents/generations.json?url";
+import enaBest from "../content/projects/evolutionary-neural-agents/best-genome.json";
+import enaBreed from "../content/projects/evolutionary-neural-agents/breed-step.json";
+import enaTrap from "../content/projects/evolutionary-neural-agents/trap.json";
+import enaOutcomes from "../content/projects/evolutionary-neural-agents/outcomes.json";
 
 const swatches = ["bg", "surface", "surface-raised", "surface-sunken", "ink", "ink-muted", "ink-faint", "accent", "accent-soft", "success", "warning", "danger"];
 const type = ["display-xl", "display-l", "heading-1", "heading-2", "heading-3", "body-l", "body", "body-s", "label", "meta", "prompt", "code"];
@@ -105,6 +116,15 @@ const type = ["display-xl", "display-l", "heading-1", "heading-2", "heading-3", 
       <ShellLab stage="parse" line='time | tr -":" "." | wc -c > out.txt' autoplay={false} />
       <PipeRoles mark={["time", "tr", "wc"]} />
       <ShellLab stage="run" line='time | tr -":" "." | wc -c > out.txt' autoplay={false} />
+    </section>
+
+    <section class="sg__project">
+      <Label index="09 —">Evolutionary neural agents figures</Label>
+      <GenerationReplay data={enaGens as any} src={enaGensUrl} autoplay={false} captions={Object.fromEntries(enaGens.gens.map((g) => [g.g, `Generation ${g.g}.`]))} />
+      <AgentBrain genome={enaBest.genome} generation={enaBest.generation} autoplay={false} />
+      <BreedStep data={enaBreed as any} autoplay={false} />
+      <TrapMap data={enaTrap as any} />
+      <OutcomeChart data={enaOutcomes as any} />
     </section>
   </div>
 </BaseLayout>

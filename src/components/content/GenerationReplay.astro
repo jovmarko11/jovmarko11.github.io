@@ -1,0 +1,183 @@
+---
+/**
+ * GenerationReplay — every agent of a few generations of Evolutionary Neural Agents, replayed
+ * from the real C++ run. The paths are the positions the project's own Agent/Episode produced
+ * (recorded by a harness that links the project and reproduces its headless run bit for bit),
+ * a point every k steps; nothing here is simulated again.
+ *
+ *   import gens from "./evolutionary-neural-agents/generations.json";
+ *   import gensUrl from "./evolutionary-neural-agents/generations.json?url";
+ *   <GenerationReplay data={gens} src={gensUrl} captions={{ 0: "…", 7: "…" }} />
+ *
+ * Props
+ *   data      the generations file, used at build time for the tabs and the static picture
+ *   src       URL of the same file; the browser fetches it when the figure comes near
+ *   captions  one short caption per generation (HTML: <b>, <code>)
+ *   autoplay  play through the generations when scrolled into view (default true; never with
+ *             reduced motion)
+ * Without JS (and before the data arrives) the last generation is shown complete.
+ * Wrap it in <Figure> to number it.
+ */
+import { arenaSvg, counts, decodeGeneration, generationStaticSvg, VIEWBOX, type GenerationsFile } from "../../lib/ena-scene";
+
+interface Props {
+  data: GenerationsFile;
+  src: string;
+  captions: Record<number, string>;
+  autoplay?: boolean;
+}
+const { data, src, captions, autoplay = true } = Astro.props;
+for (const g of data.gens) if (!captions[g.g]) throw new Error(`GenerationReplay: no caption for generation ${g.g}`);
+
+const tabs = data.gens.map((g) => {
+  const agents = decodeGeneration(data, g);
+  const c = counts(agents, Infinity);
+  return { g: g.g, ...c, end: Math.max(...agents.map((a) => a.n)) };
+});
+const last = data.gens[data.gens.length - 1];
+const lastTab = tabs[tabs.length - 1];
+const plain = (s: string) => s.replace(/<[^>]+>/g, "");
+const longest = Math.max(...Object.values(captions).map((c) => plain(c).length));
+---
+
+<div class="gr" data-gen-replay data-src={src} data-autoplay={autoplay ? "true" : "false"} data-k={data.k}
+  role="group" aria-label="Every agent of six generations, replayed from the real training run" tabindex="0"
+  style={`--cap-lines: ${Math.max(3, Math.ceil(longest / 44))}`}>
+  <script is:inline type="application/json" data-captions set:html={JSON.stringify(captions)} />
+
+  <div class="gr__tabs" role="tablist" aria-label="Generation">
+    {tabs.map((t) => (
+      <button type="button" role="tab" class="gr__tab" data-g={t.g} aria-selected={t.g === last.g ? "true" : "false"}>
+        <span class="gr__tab-g">gen {t.g}</span>
+        <span class="gr__tab-n" aria-label={`${t.R} reached the target`}><i class="gr__sw is-R" aria-hidden="true"></i>{t.R}</span>
+      </button>
+    ))}
+  </div>
+
+  <div class="gr__stage">
+    <svg class="gr__map" viewBox={VIEWBOX} aria-hidden="true" focusable="false">
+      <g set:html={arenaSvg()} />
+      <g data-layer set:html={generationStaticSvg(data, last)} />
+    </svg>
+
+    <div class="gr__side">
+      <p class="gr__gen t-label" data-gen>Generation {last.g}</p>
+      <p class="gr__caption" data-caption aria-live="polite" set:html={captions[last.g]} />
+      <dl class="gr__counts">
+        <div><dt><svg viewBox="-1 -1 2 2" class="gr__key is-R" aria-hidden="true"><circle r="0.6" /></svg>reached the target</dt><dd data-c="R">{lastTab.R}</dd></div>
+        <div><dt><svg viewBox="-1 -1 2 2" class="gr__key is-C" aria-hidden="true"><path d="M-.6 -.6L.6 .6M-.6 .6L.6 -.6" /></svg>crashed</dt><dd data-c="C">{lastTab.C}</dd></div>
+        <div><dt><svg viewBox="-1 -1 2 2" class="gr__key is-T" aria-hidden="true"><circle r="0.6" /></svg>out of time</dt><dd data-c="T">{lastTab.T}</dd></div>
+        <div><dt><svg viewBox="-1 -1 2 2" class="gr__key is-A" aria-hidden="true"><circle r="0.45" /></svg>still driving</dt><dd data-c="alive">{lastTab.alive}</dd></div>
+      </dl>
+      <p class="gr__note"><svg viewBox="0 0 22 6" class="gr__key gr__key--best" aria-hidden="true"><path d="M1 3H21" /></svg>the fittest agent of the generation</p>
+    </div>
+  </div>
+
+  <div class="gr__bar">
+    <div class="gr__ctrls" role="group" aria-label="Playback">
+      <button type="button" class="gr__btn" data-act="restart" aria-label="Replay this generation">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5V5.5h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+      <button type="button" class="gr__btn" data-act="play" aria-label="Play" data-state="paused">
+        <svg class="gr__ic-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 3l8 5-8 5z" fill="currentColor" /></svg>
+        <svg class="gr__ic-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 3h2.6v10H4.5zM8.9 3h2.6v10H8.9z" fill="currentColor" /></svg>
+      </button>
+    </div>
+    <input class="gr__range" type="range" min="0" max={lastTab.end} value={lastTab.end} step="1" data-range aria-label="Simulation step" />
+    <span class="gr__clock t-meta" data-clock>step {lastTab.end}</span>
+  </div>
+</div>
+
+<style>
+  .gr {
+    --gr-R: var(--project, var(--accent));
+    --gr-C: var(--danger);
+    --gr-T: var(--hue-sky);
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    padding: 14px 16px 12px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .gr:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  .gr__tabs { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
+  .gr__tab {
+    min-height: var(--touch-target); display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px;
+    padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-s);
+    background: var(--surface); color: var(--ink-muted); cursor: pointer; text-align: left;
+    font-family: var(--font-mono); font-size: 12px; line-height: 16px;
+  }
+  .gr__tab:hover { border-color: var(--gr-R); }
+  .gr__tab:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .gr__tab[aria-selected="true"] { border-color: var(--gr-R); background: var(--project-soft, var(--accent-soft)); color: var(--ink); }
+  .gr__tab-g { font-weight: 700; color: var(--ink); }
+  .gr__tab-n { display: inline-flex; align-items: center; gap: 5px; font-variant-numeric: tabular-nums; }
+  .gr__sw { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--gr-R); }
+
+  .gr__stage { display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .gr__map { display: block; width: 100%; height: auto; }
+
+  .gr :global(.ena-floor) { fill: var(--surface); }
+  .gr :global(.ena-grid) { stroke: var(--line); stroke-width: 0.06; fill: none; }
+  .gr :global(.ena-border) { fill: none; stroke: var(--line-strong); stroke-width: 0.15; }
+  .gr :global(.ena-wall), .gr :global(.ena-obst) { fill: color-mix(in srgb, var(--ink) 26%, var(--surface)); }
+  .gr :global(.ena-target) { fill: var(--ink); }
+  .gr :global(.ena-target-ring) { fill: none; stroke: var(--ink); stroke-width: 0.12; stroke-dasharray: 0.4 0.3; }
+  .gr :global(.ena-spawn) { fill: none; stroke: var(--ink); stroke-width: 0.15; }
+  .gr :global(.ena-label) { font-family: var(--font-mono); font-size: 1.5px; fill: var(--ink-muted); }
+
+  .gr :global(.gr-trail) { fill: none; stroke: var(--ink-faint); stroke-width: 0.13; stroke-opacity: 0.6; stroke-linecap: round; stroke-linejoin: round; transition: stroke 0.35s; }
+  .gr :global(.gr-trail.is-R:not(.is-live)) { stroke: var(--gr-R); }
+  .gr :global(.gr-trail.is-C:not(.is-live)) { stroke: var(--gr-C); }
+  .gr :global(.gr-trail.is-T:not(.is-live)) { stroke: var(--gr-T); }
+  .gr :global(.gr-trail--best) { stroke-width: 0.42; stroke-opacity: 1; }
+  .gr :global(.gr-trail--best.is-live) { stroke: var(--ink); }
+  .gr :global(.gr-dot) { fill: var(--ink); stroke: var(--surface); stroke-width: 0.12; }
+  .gr :global(.gr-end) { stroke-width: 0.24; stroke-linecap: round; }
+  .gr :global(.gr-end.is-C) { stroke: var(--gr-C); fill: none; }
+  .gr :global(.gr-end.is-T) { stroke: var(--gr-T); fill: var(--surface); stroke-width: 0.2; }
+  .gr :global(.gr-end.is-R) { fill: var(--gr-R); stroke: var(--surface); stroke-width: 0.12; }
+  .gr :global(.gr-end.is-hidden), .gr :global(.gr-dot.is-hidden) { display: none; }
+
+  .gr__side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .gr p.gr__gen { margin: 0; color: var(--ink); }
+  .gr p.gr__caption { margin: 0; max-width: none; font-size: 15px; line-height: 24px; color: var(--ink-muted); min-height: calc(var(--cap-lines) * 24px); }
+  .gr__caption :global(b) { color: var(--ink); font-weight: 700; }
+  .gr__caption :global(code) { font-family: var(--font-mono); font-size: 0.9em; color: var(--ink); }
+
+  .gr__counts { margin: 0; display: grid; gap: 4px; font-family: var(--font-mono); font-size: 13px; line-height: 20px; }
+  .gr__counts div { display: flex; justify-content: space-between; gap: 12px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .gr__counts dt { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-muted); }
+  .gr__counts dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 700; }
+  .gr__key { width: 12px; height: 12px; flex: none; overflow: visible; }
+  .gr__key.is-R circle { fill: var(--gr-R); }
+  .gr__key.is-C path { stroke: var(--gr-C); stroke-width: 0.35; stroke-linecap: round; fill: none; }
+  .gr__key.is-T circle { fill: none; stroke: var(--gr-T); stroke-width: 0.3; }
+  .gr__key.is-A circle { fill: var(--ink); }
+  .gr__key--best { width: 22px; height: 6px; }
+  .gr__key--best path { stroke: var(--ink-muted); stroke-width: 3; stroke-linecap: round; }
+  .gr p.gr__note { margin: 0; display: inline-flex; align-items: center; gap: 8px; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); max-width: none; }
+
+  .gr__bar { display: flex; align-items: center; gap: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .gr__ctrls { display: flex; gap: 6px; }
+  .gr__btn { min-width: var(--touch-target); min-height: var(--touch-target); display: inline-grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: var(--radius-s); cursor: pointer; }
+  .gr__btn:hover { border-color: var(--gr-R); }
+  .gr__btn:focus-visible, .gr__range:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .gr__btn[data-state="playing"] .gr__ic-play, .gr__btn[data-state="paused"] .gr__ic-pause { display: none; }
+  .gr__range { flex: 1; min-width: 0; accent-color: var(--gr-R); height: var(--touch-target); }
+  .gr__clock { color: var(--ink); font-variant-numeric: tabular-nums; min-width: 17ch; text-align: right; }
+
+  @container screen (max-width: 640px) {
+    .gr { padding: 12px; }
+    .gr__tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .gr__stage { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+    .gr__map { max-width: 360px; margin-inline: auto; }
+    .gr p.gr__caption { min-height: 0; }
+    .gr__clock { min-width: 0; font-size: 12px; }
+  }
+</style>
+
+<script>
+  import { initGenerationReplay } from "../../scripts/generation-replay";
+  document.querySelectorAll<HTMLElement>("[data-gen-replay]").forEach(initGenerationReplay);
+</script>

@@ -1,0 +1,132 @@
+---
+/**
+ * TrapMap — why the first generations got stuck. The rings are straight-line distance to the
+ * target, which is what the progress term of the fitness rewards; the lines are the fittest agent
+ * of each generation from 0 to 8, recorded from the real C++ run (trap.json). Generations with the
+ * same best agent (an elite copied unchanged) are drawn once. Static: nothing moves.
+ *
+ *   import trap from "./evolutionary-neural-agents/trap.json";
+ *   <TrapMap data={trap} />
+ * Wrap it in <Figure> to number it.
+ */
+import { arenaSvg, pathD, VIEWBOX, type Pt } from "../../lib/ena-scene";
+import { LIMIT_X, LIMIT_Y, TARGET } from "../../lib/ena-model";
+
+interface Entry { g: number; o: "R" | "C" | "T"; n: number; f: number; closest: Pt; d: number; p: Pt[] }
+interface Props { data: Entry[] }
+const { data } = Astro.props;
+
+// one group per distinct best agent (elitism keeps the same one for several generations)
+const groups: { gens: number[]; e: Entry }[] = [];
+for (const e of data) {
+  const prev = groups[groups.length - 1];
+  if (prev && prev.e.f === e.f && prev.e.n === e.n && prev.e.d === e.d) prev.gens.push(e.g);
+  else groups.push({ gens: [e.g], e });
+}
+const label = (gs: number[]) => (gs.length > 1 ? `${gs[0]}–${gs[gs.length - 1]}` : `${gs[0]}`);
+const trapGroup = groups.reduce((a, b) => (b.e.o !== "R" && b.e.d < a.e.d ? b : a), groups[0]);
+const escape = groups.find((g) => g.e.o === "R")!;
+if (!escape) throw new Error("TrapMap: no generation reached the target");
+
+const rings = [5, 10, 15, 20, 25, 30, 35, 40, 45];
+const clipId = "trap-clip";
+---
+
+<div class="tm">
+  <svg class="tm__map" viewBox={VIEWBOX} role="img" aria-labelledby="tm-desc">
+    <desc id="tm-desc">The arena with rings of equal distance to the target. The best agents of generations 3 to 7 all end at the same point above the target, on the other side of the second wall, {trapGroup.e.d} units away. In generation {escape.gens[0]} one agent goes left through the gap in the second wall and reaches the target.</desc>
+    <defs><clipPath id={clipId}><rect x={-LIMIT_X} y={-LIMIT_Y} width={2 * LIMIT_X} height={2 * LIMIT_Y} /></clipPath></defs>
+    <g set:html={arenaSvg({ labels: false })} />
+    <g clip-path={`url(#${clipId})`}>
+      {rings.map((r) => <circle class="tm-ring" cx={TARGET.x} cy={TARGET.y} r={r} />)}
+    </g>
+    {[10, 20].map((r) => <text class="tm-ring-lab" x={TARGET.x - r - 0.4} y={TARGET.y - 0.5} text-anchor="end">{r}</text>)}
+    {groups.filter((g) => g !== trapGroup && g !== escape).map((g) => <path class="tm-path" d={pathD(g.e.p, 1, 2)} />)}
+    <path class="tm-path tm-path--trap" d={pathD(trapGroup.e.p, 1, 2)} />
+    <path class="tm-path tm-path--escape" d={pathD(escape.e.p, 1, 2)} />
+    <line class="tm-gap" x1={trapGroup.e.closest[0]} y1={trapGroup.e.closest[1]} x2={TARGET.x} y2={TARGET.y - TARGET.r} />
+    <circle class="tm-end tm-end--trap" cx={trapGroup.e.closest[0]} cy={trapGroup.e.closest[1]} r="0.75" />
+    <text class="tm-lab" x={trapGroup.e.closest[0] - 1.3} y={trapGroup.e.closest[1] + 0.55} text-anchor="end">gens {label(trapGroup.gens)}</text>
+    <text class="tm-lab tm-lab--muted" x={trapGroup.e.closest[0] + 1.3} y={(trapGroup.e.closest[1] + TARGET.y) / 2 + 3}>{trapGroup.e.d}</text>
+    <text class="tm-lab" x={-12} y={2.6}>gen {escape.gens[0]}</text>
+    <circle class="ena-spawn-dot" cx="-15" cy="-25" r="0.5" />
+    <text class="tm-lab tm-lab--muted" x="-15" y="-26.8" text-anchor="middle">start</text>
+    <text class="tm-lab tm-lab--muted" x={TARGET.x + 2.4} y={TARGET.y + 0.55}>target</text>
+  </svg>
+
+  <div class="tm__side">
+    <table class="tm__table">
+      <caption class="t-label">The fittest agent, generation by generation</caption>
+      <thead><tr><th scope="col">gen</th><th scope="col">fitness</th><th scope="col">closest to target</th></tr></thead>
+      <tbody>
+        {groups.map((g) => (
+          <tr class:list={{ "is-trap": g === trapGroup, "is-escape": g === escape }}>
+            <th scope="row">{label(g.gens)}</th>
+            <td>{g.e.f.toFixed(1)}</td>
+            <td>{g.e.o === "R" ? `reached, step ${g.e.n}` : g.e.d.toFixed(1)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    <ul class="tm__legend" aria-label="Legend">
+      <li><svg viewBox="0 0 22 6" aria-hidden="true"><path class="tm-key tm-key--trap" d="M1 3H21" /></svg>the same elite each time: out of time right above the target</li>
+      <li><svg viewBox="0 0 22 6" aria-hidden="true"><path class="tm-key tm-key--escape" d="M1 3H21" /></svg>the first agent to reach the target</li>
+      <li><svg viewBox="0 0 22 6" aria-hidden="true"><path class="tm-key" d="M1 3H21" /></svg>earlier best agents</li>
+      <li><svg viewBox="0 0 22 6" aria-hidden="true"><path class="tm-key tm-key--ring" d="M1 3H21" /></svg>equal distance to the target, every 5 units</li>
+    </ul>
+  </div>
+</div>
+
+<style>
+  .tm {
+    --tm-R: var(--project, var(--accent));
+    --tm-T: var(--hue-sky);
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    padding: 14px 16px;
+    display: grid; grid-template-columns: minmax(0, 330px) minmax(0, 1fr); gap: 20px; align-items: start;
+  }
+  .tm__map { display: block; width: 100%; height: auto; }
+  .tm :global(.ena-floor) { fill: var(--surface); }
+  .tm :global(.ena-grid) { stroke: none; }
+  .tm :global(.ena-border) { fill: none; stroke: var(--line-strong); stroke-width: 0.15; }
+  .tm :global(.ena-wall), .tm :global(.ena-obst) { fill: color-mix(in srgb, var(--ink) 26%, var(--surface)); }
+  .tm :global(.ena-target) { fill: var(--ink); }
+  .tm :global(.ena-target-ring) { fill: none; stroke: var(--ink); stroke-width: 0.12; stroke-dasharray: 0.4 0.3; }
+  .tm :global(.ena-spawn) { fill: none; stroke: var(--ink); stroke-width: 0.15; }
+  .tm-ring { fill: none; stroke: var(--ink-faint); stroke-width: 0.08; stroke-opacity: 0.7; }
+  .tm-ring-lab { font-family: var(--font-mono); font-size: 1.3px; fill: var(--ink-faint); }
+  .tm-path { fill: none; stroke: var(--ink-faint); stroke-width: 0.18; stroke-linecap: round; stroke-linejoin: round; }
+  .tm-path--trap { stroke: var(--tm-T); stroke-width: 0.45; }
+  .tm-path--escape { stroke: var(--tm-R); stroke-width: 0.45; }
+  .tm-gap { stroke: var(--ink); stroke-width: 0.12; stroke-dasharray: 0.5 0.4; }
+  .tm-end--trap { fill: var(--surface); stroke: var(--tm-T); stroke-width: 0.3; }
+  .ena-spawn-dot { fill: var(--ink); }
+  .tm-lab { font-family: var(--font-mono); font-size: 1.6px; fill: var(--ink); font-weight: 700; }
+  .tm-lab--muted { fill: var(--ink-muted); font-weight: 400; }
+
+  .tm__side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .tm__table { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 13px; line-height: 20px; }
+  .tm__table caption { text-align: left; margin-bottom: 8px; color: var(--ink); }
+  .tm__table th, .tm__table td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; }
+  .tm__table th:first-child { text-align: left; }
+  .tm__table thead th { color: var(--ink-muted); font-weight: 500; }
+  .tm__table tbody th { color: var(--ink); font-weight: 700; }
+  .tm__table td { color: var(--ink-muted); }
+  .tm__table tr.is-trap { box-shadow: inset 3px 0 0 var(--tm-T); }
+  .tm__table tr.is-escape { box-shadow: inset 3px 0 0 var(--tm-R); }
+  .tm__table tr.is-trap td, .tm__table tr.is-escape td { color: var(--ink); }
+  .tm ul.tm__legend { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); }
+  .tm ul.tm__legend li { display: flex; align-items: center; gap: 8px; margin: 0; padding: 0; }
+  .tm ul.tm__legend li::before { content: none; }
+  .tm ul.tm__legend svg { width: 22px; height: 6px; flex: none; }
+  .tm-key { stroke: var(--ink-faint); stroke-width: 2; stroke-linecap: round; }
+  .tm-key--trap { stroke: var(--tm-T); stroke-width: 3; }
+  .tm-key--escape { stroke: var(--tm-R); stroke-width: 3; }
+  .tm-key--ring { stroke-width: 1; }
+
+  @container screen (max-width: 640px) {
+    .tm { grid-template-columns: minmax(0, 1fr); padding: 12px; }
+    .tm__map { max-width: 360px; margin-inline: auto; }
+  }
+</style>

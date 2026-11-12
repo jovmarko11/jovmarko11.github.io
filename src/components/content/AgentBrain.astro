@@ -1,0 +1,213 @@
+---
+/**
+ * AgentBrain — one evolved agent driving, with everything it senses and computes on each step:
+ * the seven rays, the 11 network inputs, the activations of the 11-10-4-2 network and the two
+ * outputs that become a turn and a speed. Runs lib/ena-model.ts, a TypeScript copy of the
+ * project's Agent::step that was checked against the C++ code (same outcome and step count on 800
+ * episodes). The genome is the real best agent of the last generation of the seed-42 run.
+ *
+ *   import best from "./evolutionary-neural-agents/best-genome.json";
+ *   <AgentBrain genome={best.genome} generation={best.generation} />
+ *
+ * Props
+ *   genome       174 numbers, NeuralNetwork::getParameters order
+ *   generation   shown in the labels
+ *   initialStep  the step drawn without JS and for reduced motion (default 140)
+ *   autoplay     drive when scrolled into view and loop (default true; never with reduced motion)
+ * Clicking the map drops the agent there (facing right) and starts a new episode.
+ * Wrap it in <Figure> to number it.
+ */
+import { arenaSvg, pathD, VIEWBOX, type Pt } from "../../lib/ena-scene";
+import { layersFromGenome, makeAgent, runEpisode, step, type StepTrace } from "../../lib/ena-model";
+import { edgeLoads, edges, INPUT_LABELS, INPUT_SHORT, NET_H, NET_W, nodes, nodeValues, OUTPUT_LABELS, rayEnds, turnText, valueFill } from "../../lib/agent-brain";
+
+interface Props { genome: number[]; generation: number; initialStep?: number; autoplay?: boolean }
+const { genome, generation, initialStep = 140, autoplay = true } = Astro.props;
+
+const layers = layersFromGenome(genome);
+const episode = runEpisode(genome);
+const route: Pt[] = episode.path.map((p) => [p.x, p.y]);
+
+// replay to initialStep and keep the state the agent decided on
+const a = makeAgent();
+let trace: StepTrace | null = null;
+let pre = { pos: { ...a.pos }, sensorDirs: a.sensorDirs.slice() };
+for (let s = 0; s <= initialStep && a.alive; s++) {
+  pre = { pos: { ...a.pos }, sensorDirs: a.sensorDirs.slice() };
+  trace = step(a, layers);
+}
+if (!trace) throw new Error("AgentBrain: the episode ended before initialStep");
+const rays = rayEnds(pre, trace.scan);
+const ns = nodes();
+const es = edges(layers);
+const vals = nodeValues(trace);
+const loads = edgeLoads(layers, trace);
+const maxW = Math.max(...es.map((e) => Math.abs(e.w)));
+const trail = route.slice(0, initialStep + 1);
+const outcomeText = episode.outcome === "R" ? `reaches the target in ${episode.steps} steps` : episode.outcome === "C" ? `crashes at step ${episode.steps}` : "runs out of time";
+const fmt = (v: number) => (v >= 0 ? " " : "") + v.toFixed(2);
+---
+
+<div class="ab" data-agent-brain data-autoplay={autoplay ? "true" : "false"} data-initial={initialStep}
+  role="group" aria-label={`The best agent of generation ${generation} driving, with its sensors and network`} tabindex="0">
+  <script is:inline type="application/json" data-genome set:html={JSON.stringify(genome)} />
+
+  <div class="ab__stage">
+    <div class="ab__mapwrap">
+      <svg class="ab__map" viewBox={VIEWBOX} aria-hidden="true" focusable="false" data-map>
+        <g set:html={arenaSvg()} />
+        <path class="ab-route" d={pathD(route, 2, 2)} data-route />
+        <path class="ab-trail" d={pathD(trail, 2)} data-trail />
+        <g data-rays>
+          {rays.map((r) => <line class="ab-ray" x1={pre.pos.x} y1={pre.pos.y} x2={r.x} y2={r.y} />)}
+        </g>
+        <g data-hits>
+          {rays.map((r) => <circle class:list={["ab-hit", { "is-off": !r.hit }]} cx={r.x} cy={r.y} r="0.35" />)}
+        </g>
+        <circle class="ab-agent" cx={pre.pos.x} cy={pre.pos.y} r="0.6" data-agent />
+      </svg>
+      <p class="ab__hint">Click the map to drop the agent somewhere else.</p>
+    </div>
+
+    <div class="ab__right">
+      <svg class="ab__net" viewBox={`0 0 ${NET_W} ${NET_H}`} aria-hidden="true" focusable="false" data-net>
+        <g data-edges>
+          {es.map((e, k) => (
+            <line class:list={["ab-edge", e.w >= 0 ? "is-pos" : "is-neg"]} x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+              stroke-width={(0.4 + 2.6 * Math.abs(e.w) / maxW).toFixed(2)} style={`opacity:${(0.06 + 0.84 * loads[k]).toFixed(3)}`} />
+          ))}
+        </g>
+        <g data-nodes>
+          {ns.map((n, k) => <circle class="ab-node" cx={n.x} cy={n.y} r={n.l === 0 ? 6.5 : 8} style={`fill:${valueFill(vals[k])}`} />)}
+        </g>
+        {INPUT_LABELS.map((t, i) => (
+          <g>
+            <text class="ab-in" x="0" y={ns[i].y + 4}>{t}</text>
+            <text class="ab-in ab-in--short" x="60" y={ns[i].y + 5}>{INPUT_SHORT[i]}</text>
+            <text class="ab-val" x={ns[i].x - 12} y={ns[i].y + 4} text-anchor="end" data-in={i}>{fmt(vals[i])}</text>
+          </g>
+        ))}
+        {OUTPUT_LABELS.map((t, i) => {
+          const n = ns[ns.length - 2 + i];
+          return <text class="ab-out" x={n.x} y={n.y + (i === 0 ? -16 : 24)} text-anchor="middle">{t}</text>;
+        })}
+        <text class="ab-col" x={ns[11].x} y="10" text-anchor="middle">10</text>
+        <text class="ab-col" x={ns[21].x} y="10" text-anchor="middle">4</text>
+      </svg>
+
+      <p class="ab__short">L90° … R90°: the rays, from 90° left to 90° right · θ: the angle to the target · dist: distance to the target</p>
+      <dl class="ab__read">
+        <div><dt>step</dt><dd data-r="step">{initialStep} · {(initialStep * 0.02).toFixed(2)} s</dd></div>
+        <div><dt>turn</dt><dd data-r="turn">{turnText(trace.turn)}</dd></div>
+        <div><dt>speed</dt><dd data-r="speed">{trace.speed.toFixed(1)} units/s</dd></div>
+        <div><dt>episode</dt><dd data-r="status">{outcomeText}</dd></div>
+      </dl>
+    </div>
+  </div>
+
+  <ul class="ab__legend" aria-label="Legend">
+    <li><i class="ab__sw is-pos"></i>positive value or weight</li>
+    <li><i class="ab__sw is-neg"></i>negative</li>
+    <li><svg viewBox="0 0 22 6" aria-hidden="true"><path d="M1 3H21" class="ab-key-edge" /></svg>thicker = larger weight, brighter = carries more right now</li>
+    <li><svg viewBox="-1 -1 2 2" aria-hidden="true"><circle r="0.55" class="ab-key-hit" /></svg>a ray that hit something within 6 units</li>
+  </ul>
+
+  <div class="ab__bar">
+    <div class="ab__ctrls" role="group" aria-label="Playback">
+      <button type="button" class="ab__btn" data-act="restart" aria-label="Back to the start">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5V5.5h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+      <button type="button" class="ab__btn" data-act="play" aria-label="Play" data-state="paused">
+        <svg class="ab__ic-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 3l8 5-8 5z" fill="currentColor" /></svg>
+        <svg class="ab__ic-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 3h2.6v10H4.5zM8.9 3h2.6v10H8.9z" fill="currentColor" /></svg>
+      </button>
+      <button type="button" class="ab__btn" data-act="step" aria-label="One step">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 3l7 5-7 5zM11.5 3h2v10h-2z" fill="currentColor" /></svg>
+      </button>
+      <button type="button" class="ab__btn ab__btn--txt t-meta" data-act="speed" aria-label="Playback speed">½×</button>
+    </div>
+    <span class="ab__msg t-meta" data-msg aria-live="polite">generation {generation}, the fittest agent</span>
+  </div>
+</div>
+
+<style>
+  .ab {
+    --ab-pos: var(--hue-amber);
+    --ab-neg: var(--hue-violet);
+    --ab-R: var(--project, var(--accent));
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    padding: 14px 16px 12px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .ab:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .ab__stage { display: grid; grid-template-columns: minmax(0, 250px) minmax(0, 1fr); gap: 16px; align-items: start; }
+  .ab__map { display: block; width: 100%; height: auto; cursor: crosshair; touch-action: manipulation; }
+  .ab p.ab__hint { margin: 6px 0 0; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--ink-faint); max-width: none; }
+
+  .ab :global(.ena-floor) { fill: var(--surface); }
+  .ab :global(.ena-grid) { stroke: var(--line); stroke-width: 0.06; fill: none; }
+  .ab :global(.ena-border) { fill: none; stroke: var(--line-strong); stroke-width: 0.15; }
+  .ab :global(.ena-wall), .ab :global(.ena-obst) { fill: color-mix(in srgb, var(--ink) 26%, var(--surface)); }
+  .ab :global(.ena-target) { fill: var(--ink); }
+  .ab :global(.ena-target-ring) { fill: none; stroke: var(--ink); stroke-width: 0.12; stroke-dasharray: 0.4 0.3; }
+  .ab :global(.ena-spawn) { fill: none; stroke: var(--ink); stroke-width: 0.15; }
+  .ab :global(.ena-label) { font-family: var(--font-mono); font-size: 1.5px; fill: var(--ink-muted); }
+  .ab-route { fill: none; stroke: var(--ink-faint); stroke-width: 0.12; stroke-dasharray: 0.5 0.5; opacity: 0.7; }
+  .ab-trail { fill: none; stroke: var(--ab-R); stroke-width: 0.35; stroke-linecap: round; stroke-linejoin: round; }
+  .ab-ray { stroke: var(--ink-muted); stroke-width: 0.1; }
+  .ab-hit { fill: var(--ink); }
+  .ab-hit.is-off { display: none; }
+  .ab-agent { fill: var(--ab-R); stroke: var(--surface); stroke-width: 0.15; }
+
+  .ab__right { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .ab__net { display: block; width: 100%; height: auto; }
+  .ab-edge.is-pos { stroke: var(--ab-pos); }
+  .ab-edge.is-neg { stroke: var(--ab-neg); }
+  .ab-node { stroke: var(--ink-faint); stroke-width: 1; }
+  .ab-in { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-muted); }
+  .ab-in--short { display: none; }
+  .ab p.ab__short { display: none; margin: 0; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--ink-faint); max-width: none; }
+  .ab-val { font-family: var(--font-mono); font-size: 11px; fill: var(--ink); font-variant-numeric: tabular-nums; white-space: pre; }
+  .ab-out, .ab-col { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-muted); }
+
+  .ab__read { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; font-family: var(--font-mono); font-size: 12px; line-height: 18px; }
+  .ab__read div { display: flex; justify-content: space-between; gap: 8px; padding-bottom: 3px; border-bottom: 1px solid var(--line); min-width: 0; }
+  .ab__read dt { color: var(--ink-muted); }
+  .ab__read dd { margin: 0; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+
+  .ab ul.ab__legend { display: flex; gap: 6px 18px; flex-wrap: wrap; list-style: none; margin: 0; padding: 0; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); }
+  .ab ul.ab__legend li { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 0; }
+  .ab ul.ab__legend li::before { content: none; }
+  .ab ul.ab__legend svg { width: 22px; height: 10px; flex: none; }
+  .ab__sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1px solid var(--ink-faint); }
+  .ab__sw.is-pos { background: var(--ab-pos); }
+  .ab__sw.is-neg { background: var(--ab-neg); }
+  .ab-key-edge { stroke: var(--ab-pos); stroke-width: 3; stroke-linecap: round; }
+  .ab-key-hit { fill: var(--ink); }
+
+  .ab__bar { display: flex; align-items: center; gap: 12px; padding-top: 8px; border-top: 1px solid var(--line); flex-wrap: wrap; }
+  .ab__ctrls { display: flex; gap: 6px; }
+  .ab__btn { min-width: var(--touch-target); min-height: var(--touch-target); display: inline-grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: var(--radius-s); cursor: pointer; }
+  .ab__btn--txt { padding: 0 8px; }
+  .ab__btn:hover { border-color: var(--ab-R); }
+  .ab__btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .ab__btn[data-state="playing"] .ab__ic-play, .ab__btn[data-state="paused"] .ab__ic-pause { display: none; }
+  .ab__msg { color: var(--ink-muted); }
+
+  @container screen (max-width: 640px) {
+    .ab { padding: 12px; }
+    .ab__stage { grid-template-columns: minmax(0, 1fr); }
+    .ab__mapwrap { max-width: 300px; margin-inline: auto; width: 100%; }
+    .ab__read { grid-template-columns: minmax(0, 1fr); }
+    .ab-in:not(.ab-in--short) { display: none; }
+    .ab-in--short { display: inline; }
+    .ab-in, .ab-val, .ab-out, .ab-col { font-size: 16px; }
+    .ab p.ab__short { display: block; }
+  }
+</style>
+
+<script>
+  import { initAgentBrain } from "../../scripts/agent-brain";
+  document.querySelectorAll<HTMLElement>("[data-agent-brain]").forEach(initAgentBrain);
+</script>

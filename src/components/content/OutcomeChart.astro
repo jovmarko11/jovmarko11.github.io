@@ -1,0 +1,180 @@
+---
+/**
+ * OutcomeChart — how a whole training run went, generation by generation: how many of the 100
+ * agents reached the target, crashed or ran out of time, and (below, on its own axis) how many
+ * steps the fittest agent needed once one could reach the target. Data: the run's
+ * statistics.csv (seed 42, 300 generations), exported as outcomes.json rows
+ * [generation, reach, crash, timeout, best agent's steps, best fitness, best reached (0/1)].
+ *
+ *   import outcomes from "./evolutionary-neural-agents/outcomes.json";
+ *   <OutcomeChart data={outcomes} />
+ *
+ * Static SVG; a crosshair with one tooltip for all series on hover/focus (←/→ move it), and a
+ * table view under a <details>. Wrap it in <Figure> to number it.
+ */
+type Row = [number, number, number, number, number, number, number];
+interface Props { data: Row[]; tableEvery?: number }
+const { data, tableEvery = 50 } = Astro.props;
+
+const W = 720, L = 40, R = 118, T = 12;
+const H1 = 210, B1 = 22;           // outcome chart
+const H2 = 130, B2 = 26;           // steps chart
+const n = data.length;
+const x = (g: number) => L + ((W - L - R) * g) / (n - 1);
+const y1 = (v: number) => T + (H1 - T - B1) * (1 - v / 100);
+const firstReach = data.findIndex((r) => r[6] === 1);
+if (firstReach < 0) throw new Error("OutcomeChart: no generation reached the target");
+const maxSteps = 1000;
+const y2 = (v: number) => T + (H2 - T - B2) * (1 - v / maxSteps);
+
+const line = (col: number, f: (v: number) => number) => data.map((r, i) => `${i ? "L" : "M"}${x(r[0]).toFixed(1)} ${f(r[col]).toFixed(1)}`).join("");
+const steps = data.slice(firstReach).map((r, i) => `${i ? "L" : "M"}${x(r[0]).toFixed(1)} ${y2(r[4]).toFixed(1)}`).join("");
+const lastRow = data[n - 1];
+const series = [
+  { key: "R", col: 1, name: "reached the target" },
+  { key: "C", col: 2, name: "crashed" },
+  { key: "T", col: 3, name: "out of time" },
+];
+// end labels, nudged apart if two lines end close together
+const ends = series.map((s) => ({ ...s, v: lastRow[s.col], y: y1(lastRow[s.col]) })).sort((a, b) => a.y - b.y);
+for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 15) ends[i].y = ends[i - 1].y + 15;
+const xticks = [0, 50, 100, 150, 200, 250].filter((g) => g < n);
+const tableRows = data.filter((r, i) => i === 0 || i === firstReach || i % tableEvery === 0 || i === n - 1);
+---
+
+<div class="oc" data-outcome-chart tabindex="0" role="group" aria-label="Outcomes per generation and the best agent's time, 300 generations">
+  <script is:inline type="application/json" data-rows set:html={JSON.stringify(data.map((r) => [r[0], r[1], r[2], r[3], r[6] ? r[4] : null]))} />
+  <p class="oc__title">Agents per outcome, out of 100</p>
+  <div class="oc__plot">
+    <svg class="oc__svg" viewBox={`0 0 ${W} ${H1}`} aria-hidden="true" focusable="false" data-svg="1">
+      {[0, 25, 50, 75, 100].map((v) => (
+        <g>
+          <line class="oc-grid" x1={L} x2={W - R} y1={y1(v)} y2={y1(v)} />
+          <text class="oc-tick" x={L - 8} y={y1(v) + 4} text-anchor="end">{v}</text>
+        </g>
+      ))}
+      {series.map((s) => <path class:list={["oc-line", `is-${s.key}`]} d={line(s.col, y1)} />)}
+      {ends.map((e) => (
+        <g>
+          <circle class:list={["oc-end", `is-${e.key}`]} cx={x(lastRow[0])} cy={y1(e.v)} r="4" />
+          <text class="oc-endlab" x={x(lastRow[0]) + 10} y={e.y + 4}><tspan class="oc-endval">{e.v}</tspan><tspan class="oc-endname"> {e.name === "reached the target" ? "reached" : e.name}</tspan></text>
+        </g>
+      ))}
+      <line class="oc-mark" x1={x(firstReach)} x2={x(firstReach)} y1={T} y2={H1 - B1} />
+      <text class="oc-note" x={x(firstReach) + 6} y={T + 10}>gen {firstReach}: the first agent reaches the target</text>
+      <line class="oc-cross" x1="0" x2="0" y1={T} y2={H1 - B1} data-cross />
+    </svg>
+    <p class="oc__title">Steps the fittest agent needed to reach the target</p>
+    <svg class="oc__svg" viewBox={`0 0 ${W} ${H2}`} aria-hidden="true" focusable="false" data-svg="2">
+      {[0, 500, 1000].map((v) => (
+        <g>
+          <line class="oc-grid" x1={L} x2={W - R} y1={y2(v)} y2={y2(v)} />
+          <text class="oc-tick" x={L - 8} y={y2(v) + 4} text-anchor="end">{v}</text>
+        </g>
+      ))}
+      {xticks.map((g) => <text class="oc-tick" x={x(g)} y={H2 - 6} text-anchor="middle">{g}</text>)}
+      <text class="oc-tick oc-tick--ax" x={W - R + 10} y={H2 - 6}>generation</text>
+      <path class="oc-line is-S" d={steps} />
+      <circle class="oc-end is-S" cx={x(firstReach)} cy={y2(data[firstReach][4])} r="4" />
+      <circle class="oc-end is-S" cx={x(lastRow[0])} cy={y2(lastRow[4])} r="4" />
+      <text class="oc-endlab" x={x(firstReach) + 8} y={y2(data[firstReach][4]) - 6}><tspan class="oc-endval">{data[firstReach][4]}</tspan><tspan class="oc-endname"> steps</tspan></text>
+      <text class="oc-endlab" x={x(lastRow[0]) + 10} y={y2(lastRow[4]) + 4}><tspan class="oc-endval">{lastRow[4]}</tspan><tspan class="oc-endname"> steps</tspan></text>
+      <line class="oc-cross" x1="0" x2="0" y1={T} y2={H2 - B2} data-cross />
+    </svg>
+    <div class="oc__tip" data-tip hidden>
+      <p class="oc__tip-h" data-tip-g></p>
+      <dl>
+        <div><dt><i class="oc__lk is-R"></i>reached</dt><dd data-tip-v="1"></dd></div>
+        <div><dt><i class="oc__lk is-T"></i>out of time</dt><dd data-tip-v="3"></dd></div>
+        <div><dt><i class="oc__lk is-C"></i>crashed</dt><dd data-tip-v="2"></dd></div>
+        <div><dt><i class="oc__lk is-S"></i>best agent's steps</dt><dd data-tip-v="4"></dd></div>
+      </dl>
+    </div>
+  </div>
+  <ul class="oc__legend" aria-label="Legend">
+    {series.map((s) => <li><i class:list={["oc__lk", `is-${s.key}`]}></i>{s.name}</li>)}
+  </ul>
+  <details class="oc__table">
+    <summary>Show as a table</summary>
+    <table>
+      <thead><tr><th scope="col">generation</th><th scope="col">reached</th><th scope="col">out of time</th><th scope="col">crashed</th><th scope="col">best agent's steps</th></tr></thead>
+      <tbody>
+        {tableRows.map((r) => <tr><th scope="row">{r[0]}</th><td>{r[1]}</td><td>{r[3]}</td><td>{r[2]}</td><td>{r[6] ? r[4] : "did not reach"}</td></tr>)}
+      </tbody>
+    </table>
+  </details>
+</div>
+
+<style>
+  .oc {
+    --oc-R: var(--project, var(--accent));
+    --oc-C: var(--danger);
+    --oc-T: var(--hue-sky);
+    --oc-S: var(--ink);
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    padding: 14px 16px 12px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .oc:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .oc p { max-width: none; }
+  .oc p.oc__title { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); }
+  .oc__plot { position: relative; display: flex; flex-direction: column; gap: 8px; }
+  .oc__svg { display: block; width: 100%; height: auto; overflow: visible; touch-action: pan-y; }
+  .oc-grid { stroke: var(--line); stroke-width: 1; }
+  .oc-tick { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .oc-line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .oc-line.is-R { stroke: var(--oc-R); }
+  .oc-line.is-C { stroke: var(--oc-C); }
+  .oc-line.is-T { stroke: var(--oc-T); }
+  .oc-line.is-S { stroke: var(--oc-S); }
+  .oc-end { stroke: var(--bg); stroke-width: 2; }
+  .oc-end.is-R { fill: var(--oc-R); }
+  .oc-end.is-C { fill: var(--oc-C); }
+  .oc-end.is-T { fill: var(--oc-T); }
+  .oc-end.is-S { fill: var(--oc-S); }
+  .oc-endlab { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-muted); }
+  .oc-endval { fill: var(--ink); font-weight: 700; }
+  .oc-mark { stroke: var(--ink-faint); stroke-width: 1; }
+  .oc-note { font-family: var(--font-mono); font-size: 11px; fill: var(--ink-muted); }
+  .oc-cross { stroke: var(--ink); stroke-width: 1; opacity: 0; pointer-events: none; }
+  .oc.is-hover .oc-cross { opacity: 0.5; }
+
+  .oc__tip { position: absolute; top: 0; left: 0; min-width: 190px; padding: 8px 10px; background: var(--surface-raised); border: 1px solid var(--line-strong); border-radius: var(--radius-s); box-shadow: var(--shadow-overlay); pointer-events: none; font-family: var(--font-mono); font-size: 12px; line-height: 18px; z-index: 2; }
+  .oc p.oc__tip-h { margin: 0 0 4px; color: var(--ink-muted); }
+  .oc__tip dl { margin: 0; display: grid; gap: 2px; }
+  .oc__tip dl div { display: flex; justify-content: space-between; gap: 14px; }
+  .oc__tip dt { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-muted); }
+  .oc__tip dd { margin: 0; color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .oc__lk { display: inline-block; width: 14px; height: 0; border-top: 2px solid; }
+  .oc__lk.is-R { border-color: var(--oc-R); }
+  .oc__lk.is-C { border-color: var(--oc-C); }
+  .oc__lk.is-T { border-color: var(--oc-T); }
+  .oc__lk.is-S { border-color: var(--oc-S); }
+
+  .oc ul.oc__legend { display: flex; gap: 6px 18px; flex-wrap: wrap; list-style: none; margin: 0; padding: 0; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); }
+  .oc ul.oc__legend li { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 0; }
+  .oc ul.oc__legend li::before { content: none; }
+
+  .oc__table { font-family: var(--font-mono); font-size: 12px; color: var(--ink-muted); }
+  .oc__table summary { cursor: pointer; min-height: var(--touch-target); display: flex; align-items: center; }
+  .oc__table summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .oc__table table { width: 100%; border-collapse: collapse; }
+  .oc__table th, .oc__table td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: right; font-variant-numeric: tabular-nums; }
+  .oc__table thead th { font-weight: 500; }
+  .oc__table tbody th { color: var(--ink); text-align: right; }
+  .oc__table td { color: var(--ink); }
+
+  @container screen (max-width: 640px) {
+    .oc { padding: 12px; }
+    .oc-tick, .oc-endlab, .oc-note { font-size: 19px; }
+    .oc-endname, .oc-tick--ax { display: none; }
+    .oc-line { stroke-width: 3; }
+    .oc__table th, .oc__table td { padding: 4px 4px; }
+  }
+</style>
+
+<script>
+  import { initOutcomeChart } from "../../scripts/outcome-chart";
+  document.querySelectorAll<HTMLElement>("[data-outcome-chart]").forEach(initOutcomeChart);
+</script>

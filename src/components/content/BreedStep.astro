@@ -1,0 +1,276 @@
+---
+/**
+ * BreedStep — one real step of the genetic algorithm (GeneticAlgorithm::nextGeneration), from
+ * generation 15 to 16 of the seed-42 run, followed for one child: elitism, the two tournaments,
+ * uniform crossover and mutation, and how the new generation did. Data: breed-step.json, logged
+ * from the project's own Selection/Crossover/Mutation (see lib/breed-step.ts).
+ *
+ *   import breed from "./evolutionary-neural-agents/breed-step.json";
+ *   <BreedStep data={breed} />
+ *
+ * Eight frames; the captions are written here from the data, so every number in them is computed.
+ * The page's CSS does the drawing: the player only sets the current step on the root element.
+ * Without JS (and for reduced motion, until the reader steps) the last frame is shown.
+ * Wrap it in <Figure> to number it.
+ */
+import { BASE, BAR_W, barGeom, genomeCells, nextBars, slotX, sortedBars, STEPS, STRIP_H, STRIP_W, weightClass, weightCss, type BreedFile } from "../../lib/breed-step";
+
+interface Props { data: BreedFile; autoplay?: boolean }
+const { data, autoplay = true } = Astro.props;
+
+const bars = sortedBars(data);
+const rankOf = new Map(bars.map((b) => [b.slot, b.rank]));
+const next = nextBars(data);
+const nE = data.elites.length;
+const ci = data.show.index - nE;
+const child = data.children[ci];
+if (!child) throw new Error("BreedStep: show.index is not a child slot");
+const { a: gA, b: gB, mask, mut, child: gC } = data.show;
+const mutSet = new Map(mut.map(([i, d]) => [i, d]));
+const pick = mask.split("").map((m, i) => (m === "b" ? gB[i] : gA[i]));
+const { cells, w: gw, h: gh } = genomeCells();
+if (cells.length !== gA.length) throw new Error("BreedStep: genome length does not match the network");
+
+// ---- facts for the captions -----------------------------------------------------------------------
+const outcomeWord = { R: "reached the target", C: "crashed", T: "ran out of time" } as const;
+const nR = data.pop.filter((p) => p[1] === "R").length;
+const others = data.pop.filter((p) => p[1] !== "R").map((p) => p[0]);
+const elitesAllReached = data.elites.every((s) => data.pop[s][1] === "R");
+const rank1 = (slot: number) => rankOf.get(slot)! + 1;
+const ord = (n: number) => `${n}${n % 10 === 1 && n % 100 !== 11 ? "st" : n % 10 === 2 && n % 100 !== 12 ? "nd" : n % 10 === 3 && n % 100 !== 13 ? "rd" : "th"}`;
+const taW = child.ta.w, tbW = child.tb.w;
+const tbReached = child.tb.c.filter((s) => data.pop[s][1] === "R").map(rank1).sort((x, y) => x - y);
+const counts = { a: 0, b: 0, same: 0 };
+for (const m of mask) m === "a" ? counts.a++ : m === "b" ? counts.b++ : counts.same++;
+const maxMut = Math.max(...mut.map(([, d]) => Math.abs(d)));
+const wins = data.children.flatMap((c) => [c.ta.w, c.tb.w]);
+const eliteWins = wins.filter((s) => data.elites.includes(s)).length;
+const distinctParents = new Set(wins).size;
+const nextR = data.next.filter((p) => p[1] === "R").length;
+const childR = data.children.filter((c) => c.o === "R").length;
+const prevBest = Math.min(...data.pop.filter((p) => p[1] === "R").map((p) => p[2]));
+const shown = data.next[data.show.index];
+const fastest = Math.min(...data.next.filter((p) => p[1] === "R").map((p) => p[2]));
+
+const captions: Record<string, string> = {
+  gen: `Generation ${data.gen} has finished. Its ${data.pop.length} agents, sorted by fitness: <b>${nR}</b> reached the target and got the +1000 bonus, everyone else scored between ${Math.min(...others).toFixed(0)} and ${Math.max(...others).toFixed(0)}.`,
+  elite: `<b>Elitism.</b> The best <code>round(${data.pop.length} × 0.08) = ${nE}</code> are copied into generation ${data.gen + 1} unchanged${elitesAllReached && nE === nR ? `. Here they are exactly the ${nE} that reached the target` : ""}.`,
+  tourA: `The other ${data.pop.length - nE} places get children. <b>Tournament A</b> draws ${child.ta.c.length} agents at random and keeps the fittest. The best of these is only ${ord(rank1(taW))} overall, an agent that ${outcomeWord[data.pop[taW][1]]}.`,
+  tourB: `<b>Tournament B</b> ${tbReached.length ? `happens to draw ${tbReached.length === 1 ? "an agent" : `${tbReached.length} agents`} that reached the target (${tbReached.map(ord).join(" and ")}) and keeps the ${ord(rank1(tbW))}` : `keeps the ${ord(rank1(tbW))}`}. A tournament only compares what it drew, so weaker agents become parents too, just less often.`,
+  cross: `<b>Uniform crossover.</b> Each of the ${gA.length} genes is copied from A or from B on a coin flip: ${counts.a} from A, ${counts.b} from B. The other ${counts.same} are already equal in both parents (they are relatives), so the coin doesn't matter there.`,
+  mutate: `<b>Mutation.</b> Every gene then has a 20 % chance of getting Gaussian noise with σ = 0.2. This child got ${mut.length} changes (outlined), the largest ${maxMut.toFixed(2)}.`,
+  fill: `That was the child in slot ${data.show.index}. The same happens ${data.pop.length - nE} times: in this step ${distinctParents} different agents became parents, and the ${nE} elites won ${eliteWins} of the ${wins.length} tournaments.`,
+  eval: `Generation ${data.gen + 1} runs: <b>${nextR}</b> agents reach the target, the ${nE} elites and ${childR} children. The child in slot ${data.show.index} ${shown[1] === "R" ? `does it in ${shown[2]} steps${shown[2] === fastest && shown[2] < prevBest ? `, faster than anyone in generation ${data.gen} (${prevBest})` : ""}` : outcomeWord[shown[1]]}.`,
+};
+const last = STEPS.length - 1;
+const plain = (s: string) => s.replace(/<[^>]+>/g, "");
+const longest = Math.max(...Object.values(captions).map((c) => plain(c).length));
+const isCand = (s: number, t: { c: number[] }) => t.c.includes(s);
+const tri = (x: number) => `M${x + BAR_W / 2} 9L${x + BAR_W / 2 - 3} 3H${x + BAR_W / 2 + 3}Z`;
+const showGeom = barGeom(shown[0]);
+
+/** One <path> per colour class: far smaller than one <rect> per gene. */
+function genomeSvg(key: "a" | "b" | "c"): string {
+  const groups = new Map<string, string>();
+  const add = (cls: string, x: number, y: number) => groups.set(cls, (groups.get(cls) ?? "") + `M${x} ${y}h9v9h-9z`);
+  for (const c of cells) {
+    const m = mask[c.gene];
+    if (key === "c") {
+      add(`bs-cell ${weightClass(pick[c.gene])}`, c.x, c.y);
+      if (mutSet.has(c.gene)) add(`bs-cell bs-cell--mut ${weightClass(gC[c.gene])}`, c.x, c.y);
+    } else {
+      const off = key === "a" ? m === "b" : m === "a";
+      add(`bs-cell ${weightClass((key === "a" ? gA : gB)[c.gene])}${off ? " is-off" : ""}`, c.x, c.y);
+    }
+  }
+  return [...groups].map(([cls, d]) => `<path class="${cls}" d="${d}"/>`).join("");
+}
+---
+
+<Fragment set:html={`<style>${weightCss}</style>`} />
+<div class:list={["bs", ...STEPS.map((_, i) => `p${i}`)]} data-breed-step data-step={STEPS[last]} data-autoplay={autoplay ? "true" : "false"}
+  role="group" aria-label={`One step of the genetic algorithm, from generation ${data.gen} to ${data.gen + 1}`} tabindex="0"
+  style={`--cap-lines: ${Math.max(3, Math.ceil(longest / 78))}; --cap-lines-narrow: ${Math.max(4, Math.ceil(longest / 38))}`}>
+  <script is:inline type="application/json" data-captions set:html={JSON.stringify(STEPS.map((k) => captions[k]))} />
+
+  <div class="bs__strip bs__strip--now">
+    <p class="bs__lab t-label">Generation {data.gen}, by fitness</p>
+    <svg class="bs__bars" viewBox={`0 0 ${STRIP_W} ${STRIP_H}`} aria-hidden="true" focusable="false">
+      <line class="bs-base" x1="0" x2={STRIP_W} y1={BASE + 0.5} y2={BASE + 0.5} />
+      {bars.map((b) => (
+        <rect class:list={["bs-bar", `is-${b.o}`, { "is-elite": b.rank < nE, "is-ta": isCand(b.slot, child.ta), "is-tb": isCand(b.slot, child.tb), "is-wa": b.slot === taW, "is-wb": b.slot === tbW }]}
+          x={b.x} y={b.y} width={BAR_W} height={b.h} />
+      ))}
+      {[...new Set(child.ta.c)].map((s) => <path class:list={["bs-mk", "bs-mk--ta", { "is-win": s === taW }]} d={tri(rankOf.get(s)! * 5)} />)}
+      {[...new Set(child.tb.c)].map((s) => <path class:list={["bs-mk", "bs-mk--tb", { "is-win": s === tbW }]} d={tri(rankOf.get(s)! * 5)} />)}
+      <text class="bs-ax" x={STRIP_W} y={BASE + 13} text-anchor="end">rank {data.pop.length}</text>
+      <text class="bs-ax" x="0" y={BASE + 13}>rank 1</text>
+    </svg>
+  </div>
+
+  <div class="bs__cards">
+    {[
+      { key: "a", title: "parent A", hint: "from tournament A", sub: `slot ${taW} · ${ord(rank1(taW))} · ${data.pop[taW][1] === "R" ? "reached" : data.pop[taW][1] === "C" ? "crashed" : "out of time"}`, g: gA },
+      { key: "b", title: "parent B", hint: "from tournament B", sub: `slot ${tbW} · ${ord(rank1(tbW))} · ${data.pop[tbW][1] === "R" ? "reached" : data.pop[tbW][1] === "C" ? "crashed" : "out of time"}`, g: gB },
+      { key: "c", title: "child", hint: "crossover, then mutation", sub: `slot ${data.show.index} of generation ${data.gen + 1}`, g: gC },
+    ].map((card) => (
+      <div class:list={["bs__card", `bs__card--${card.key}`]}>
+        <p class="bs__ct"><b>{card.title}</b> <span>{card.sub}</span><em>{card.hint}</em></p>
+        <svg class="bs__genome" viewBox={`-1 -1 ${gw + 2} ${gh + 2}`} aria-hidden="true" focusable="false" set:html={genomeSvg(card.key as "a" | "b" | "c")} />
+      </div>
+    ))}
+  </div>
+  <p class="bs__note">Each square is one gene, laid out as the network's three weight matrices (one row per neuron, the bias last). <i class="bs__sw is-pos"></i>positive <i class="bs__sw is-neg"></i>negative</p>
+
+  <div class="bs__strip">
+    <p class="bs__lab t-label">Generation {data.gen + 1}, by slot</p>
+    <svg class="bs__bars" viewBox={`0 0 ${STRIP_W} ${STRIP_H}`} aria-hidden="true" focusable="false">
+      <line class="bs-base" x1="0" x2={STRIP_W} y1={BASE + 0.5} y2={BASE + 0.5} />
+      {next.map((b) => <rect class:list={["bs-slot", { "is-elite": b.slot < nE, "is-shown": b.slot === data.show.index }]} x={b.x} y={BASE - 14} width={BAR_W} height="14" />)}
+      {next.map((b) => <rect class:list={["bs-bar", "bs-bar--next", `is-${b.o}`]} x={b.x} y={b.y} width={BAR_W} height={b.h} />)}
+      <path class="bs-mk bs-mk--shown" d={`M${slotX(data.show.index) + BAR_W / 2} ${Math.min(showGeom.y, BASE - 14) - 3}l-3 -6h6z`} />
+      <text class="bs-ax" x="0" y={BASE + 13}>slot 0</text>
+      <text class="bs-ax" x={STRIP_W} y={BASE + 13} text-anchor="end">slot {data.pop.length - 1}</text>
+    </svg>
+  </div>
+
+  <ul class="bs__legend" aria-label="Legend">
+    <li><i class="bs__sw is-R"></i>reached the target</li>
+    <li><i class="bs__sw is-T"></i>out of time</li>
+    <li><i class="bs__sw is-C"></i>crashed</li>
+    <li><svg viewBox="0 0 10 8" aria-hidden="true"><path d="M5 7L1 1H9Z" class="bs-key-mk" /></svg>drawn for the tournament</li>
+  </ul>
+
+  <p class="bs__caption" data-caption aria-live="polite" set:html={captions[STEPS[last]]} />
+
+  <div class="bs__bar">
+    <div class="bs__ctrls" role="group" aria-label="Steps">
+      <button type="button" class="bs__btn" data-act="prev" aria-label="Previous step">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+      <button type="button" class="bs__btn" data-act="play" aria-label="Play" data-state="paused">
+        <svg class="bs__ic-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M5 3l8 5-8 5z" fill="currentColor" /></svg>
+        <svg class="bs__ic-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4.5 3h2.6v10H4.5zM8.9 3h2.6v10H8.9z" fill="currentColor" /></svg>
+      </button>
+      <button type="button" class="bs__btn" data-act="next" aria-label="Next step">
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+    </div>
+    <ol class="bs__dots" aria-hidden="true">{STEPS.map((_, i) => <li data-dot={i} class:list={{ "is-on": i === last }}></li>)}</ol>
+    <span class="bs__count t-meta" data-count>{last + 1} / {STEPS.length}</span>
+  </div>
+</div>
+
+<style>
+  .bs {
+    --bs-R: var(--project, var(--accent));
+    --bs-C: var(--danger);
+    --bs-T: var(--hue-sky);
+    --bs-pos: var(--hue-amber);
+    --bs-neg: var(--hue-violet);
+    border: 1px solid var(--line-strong);
+    background: var(--bg);
+    padding: 14px 16px 12px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .bs:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .bs p { max-width: none; }
+  .bs__strip { display: flex; flex-direction: column; gap: 4px; }
+  .bs p.bs__lab { margin: 0; color: var(--ink-muted); }
+  .bs__bars { display: block; width: 100%; height: auto; overflow: visible; }
+  .bs-base { stroke: var(--line-strong); stroke-width: 1; }
+  .bs-ax { font-family: var(--font-mono); font-size: 9px; fill: var(--ink-faint); }
+
+  .bs-bar { transition: opacity 0.4s; }
+  .bs-bar.is-R { fill: var(--bs-R); }
+  .bs-bar.is-T { fill: var(--bs-T); }
+  .bs-bar.is-C { fill: var(--bs-C); }
+  .bs-bar.is-wa, .bs-bar.is-wb { stroke: transparent; stroke-width: 1.4; transition: opacity 0.4s, stroke 0.4s; }
+  .bs-mk { fill: var(--ink-faint); opacity: 0; transition: opacity 0.4s; }
+  .bs-mk.is-win { fill: var(--ink); }
+  .bs-mk--shown { fill: var(--ink); }
+
+  /* the current step decides what is lit; pN = "step N or later" */
+  .bs[data-step="elite"] .bs__strip--now .bs-bar:not(.is-elite) { opacity: 0.25; }
+  .bs[data-step="tourA"] .bs__strip--now .bs-bar:not(.is-ta),
+  .bs[data-step="tourB"] .bs__strip--now .bs-bar:not(.is-tb) { opacity: 0.2; }
+  .bs[data-step="tourA"] .bs-mk--ta, .bs[data-step="tourB"] .bs-mk--tb { opacity: 1; }
+  .bs[data-step="tourA"] .bs-bar.is-wa, .bs[data-step="tourB"] .bs-bar.is-wb { stroke: var(--ink); }
+  .bs.p4 .bs__strip--now .bs-bar:not(.is-wa):not(.is-wb) { opacity: 0.25; }
+  .bs.p4 .bs-bar.is-wa, .bs.p4 .bs-bar.is-wb { stroke: var(--ink); }
+  .bs.p6 .bs__strip--now .bs-bar:not(.is-wa):not(.is-wb) { opacity: 0.45; }
+
+  .bs__cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .bs__card { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px dashed var(--line-strong); border-radius: var(--radius-s); min-width: 0; transition: border-color 0.4s; }
+  .bs__card > svg { opacity: 0; transition: opacity 0.4s; }
+  .bs__ct span { display: none; }
+  .bs__ct em { display: block; font-style: normal; color: var(--ink-faint); }
+  .bs__card .bs__ct b { color: var(--ink-faint); transition: color 0.4s; }
+  .bs.p2 .bs__card--a, .bs.p3 .bs__card--b, .bs.p4 .bs__card--c { border-style: solid; }
+  .bs.p2 .bs__card--a > svg, .bs.p3 .bs__card--b > svg, .bs.p4 .bs__card--c > svg { opacity: 1; }
+  .bs.p2 .bs__card--a .bs__ct span, .bs.p3 .bs__card--b .bs__ct span, .bs.p4 .bs__card--c .bs__ct span { display: block; }
+  .bs.p2 .bs__card--a .bs__ct em, .bs.p3 .bs__card--b .bs__ct em, .bs.p4 .bs__card--c .bs__ct em { display: none; }
+  .bs.p2 .bs__card--a .bs__ct b, .bs.p3 .bs__card--b .bs__ct b, .bs.p4 .bs__card--c .bs__ct b { color: var(--ink); }
+  .bs p.bs__ct { margin: 0; font-family: var(--font-mono); font-size: 12px; line-height: 16px; color: var(--ink-muted); }
+  .bs__ct b { color: var(--ink); }
+  .bs__genome { display: block; width: 100%; max-width: 150px; height: auto; }
+  .bs :global(.bs-cell) { stroke: none; transition: opacity 0.4s, stroke 0.4s; }
+  .bs :global(.bs-cell--mut) { opacity: 0; }
+  .bs.p5 :global(.bs-cell--mut) { opacity: 1; stroke: var(--ink); stroke-width: 1.4; }
+  .bs.p4 :global(.bs-cell.is-off) { opacity: 0.12; }
+  .bs p.bs__note { margin: 0; font-family: var(--font-mono); font-size: 11px; line-height: 16px; color: var(--ink-faint); display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+
+  .bs-slot { fill: none; stroke: var(--line-strong); stroke-width: 0.6; transition: fill 0.4s; }
+  .bs.p1 .bs-slot.is-elite, .bs.p6 .bs-slot { fill: var(--ink-faint); }
+  .bs.p6 .bs-slot.is-shown { fill: var(--ink); }
+  .bs-bar--next { opacity: 0; }
+  .bs.p7 .bs-slot { fill: none; stroke: none; }
+  .bs.p7 .bs-bar--next { opacity: 1; }
+  .bs-mk--shown { opacity: 0; }
+  .bs.p6 .bs-mk--shown { opacity: 1; }
+
+  .bs ul.bs__legend { display: flex; gap: 6px 18px; flex-wrap: wrap; list-style: none; margin: 0; padding: 0; font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted); }
+  .bs ul.bs__legend li { display: inline-flex; align-items: center; gap: 6px; margin: 0; padding: 0; }
+  .bs ul.bs__legend li::before { content: none; }
+  .bs ul.bs__legend svg { width: 10px; height: 8px; }
+  .bs-key-mk { fill: var(--ink); }
+  .bs__sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+  .bs__sw.is-R { background: var(--bs-R); }
+  .bs__sw.is-T { background: var(--bs-T); }
+  .bs__sw.is-C { background: var(--bs-C); }
+  .bs__sw.is-pos { background: var(--bs-pos); }
+  .bs__sw.is-neg { background: var(--bs-neg); }
+
+  .bs p.bs__caption { margin: 0; font-size: 15px; line-height: 24px; color: var(--ink-muted); min-height: calc(var(--cap-lines) * 24px); }
+  .bs__caption :global(b) { color: var(--ink); font-weight: 700; }
+  .bs__caption :global(code) { font-family: var(--font-mono); font-size: 0.9em; color: var(--ink); }
+
+  .bs__bar { display: flex; align-items: center; gap: 12px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .bs__ctrls { display: flex; gap: 6px; }
+  .bs__btn { min-width: var(--touch-target); min-height: var(--touch-target); display: inline-grid; place-items: center; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink); border-radius: var(--radius-s); cursor: pointer; }
+  .bs__btn:hover { border-color: var(--bs-R); }
+  .bs__btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+  .bs__btn[data-state="playing"] .bs__ic-play, .bs__btn[data-state="paused"] .bs__ic-pause { display: none; }
+  .bs ol.bs__dots { flex: 1; display: flex; gap: 6px; list-style: none; margin: 0; padding: 0; }
+  .bs ol.bs__dots li { width: 8px; height: 8px; border-radius: 50%; background: var(--line-strong); margin: 0; padding: 0; }
+  .bs ol.bs__dots li::before { content: none; }
+  .bs ol.bs__dots li.is-on { background: var(--bs-R); }
+  .bs__count { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .bs-bar, .bs-mk, .bs__card, .bs__card > svg, .bs__ct b, .bs :global(.bs-cell), .bs-slot { transition: none; }
+  }
+  @container screen (max-width: 640px) {
+    .bs { padding: 12px; }
+    .bs__cards { gap: 6px; }
+    .bs__card { padding: 5px; }
+    .bs p.bs__ct { font-size: 11px; line-height: 14px; }
+    .bs p.bs__caption { min-height: calc(var(--cap-lines-narrow) * 24px); }
+    .bs-ax { font-size: 13px; }
+  }
+</style>
+
+<script>
+  import { initBreedStep } from "../../scripts/breed-step";
+  document.querySelectorAll<HTMLElement>("[data-breed-step]").forEach(initBreedStep);
+</script>

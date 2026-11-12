@@ -1,22 +1,519 @@
 ---
 title: "Agents that learn to steer by evolution"
-summary: "A population of small neural networks learns to reach a target and avoid obstacles, with no gradients: only selection, crossover and mutation."
+summary: "A hundred small neural networks learn to drive a maze with no gradients and no examples, only selection, crossover and mutation. All from scratch in C++."
 repo: jovmarko11/EvolutionaryNeuralAgents
 category: ai
-stack: [C++20, SFML 3, CMake]
+stack: [C++20, SFML 3, Dear ImGui, ImPlot, Catch2, CMake]
 status: in-progress
 period: { start: "2026-09" }
 context: "Personal project"
-spec: { label: Population, value: "200 agents" }
+spec: { label: Genome, value: "174 weights" }
 plot: { x: 0.85, y: 0.55 }
 hue: lime
 featured: true
 ---
 
+import gens from "./evolutionary-neural-agents/generations.json";
+import gensUrl from "./evolutionary-neural-agents/generations.json?url";
+import best from "./evolutionary-neural-agents/best-genome.json";
+import breed from "./evolutionary-neural-agents/breed-step.json";
+import trap from "./evolutionary-neural-agents/trap.json";
+import outcomes from "./evolutionary-neural-agents/outcomes.json";
+
 ## Idea
 
-Each agent is a small neural network that sees the world through seven ray sensors and outputs two
-numbers: how much to turn and how fast to move. Nobody trains it with backpropagation. Every generation
-the best agents are kept, crossed over and mutated, and the population slowly learns to reach the target.
+### Is "a bit better than last time" enough?
 
-<Note title="// WIP">The full write-up is on its way: the genetic algorithm, the fitness function and what the agents learned to do that I didn't expect.</Note>
+Most neural networks learn the same way: you show them the right answer, measure how wrong they were,
+and let backpropagation nudge every weight in the right direction. Evolution never had a
+right answer. It had small random changes, a world that decided who got to have children, and a lot of
+time. The thought that pulled me through this project was exactly that loop: **small random changes in a
+genome, a score, better performance**. Is that really enough? And is that, roughly, how my own brain came
+to work?
+
+So I built the loop and watched it. A hundred agents live in a 40 × 60 arena with three walls in a zigzag and
+thirteen round obstacles. Each one is a small neural network: 11 inputs, two hidden layers of 10 and 4
+neurons, and 2 outputs, 174 weights in total. Every generation all hundred of them get at most 1000 steps
+(20 simulated seconds) to reach the target. Nobody tells them where it is or how to get there. The best ones
+are kept, the rest are replaced by children of good parents, and the next generation tries again.
+
+Everything is written from scratch in C++20: the matrix class, the network, the ray casting, the genetic
+algorithm, the statistics and a headless runner for experiments. SFML draws the arena and Dear ImGui with
+ImPlot draws the control panels. Figure 01 is six generations of one real training run.
+
+<Figure n="01" caption="Every agent of six generations from the same run (seed 42), replayed at 5× speed. A path stays grey while its agent is still driving and takes the colour of its outcome when the episode ends. These are the positions the C++ program computed, recorded by a harness that links the project's code; nothing in this figure is simulated again.">
+  <GenerationReplay data={gens} src={gensUrl} captions={{
+    0: "Random weights. <b>96</b> of the 100 crash, all but one of them before leaving the first room, and half of those within the first two seconds. Nobody gets past the second wall.",
+    7: "The fittest agent is the same elite as in generations 3 to 6. It reaches the spot straight above the target, 20.5 units away, just as its 1000 steps run out. 22 agents get past the first wall, none past the second.",
+    8: "One agent goes the long way round: left, away from the target, through the gap in the second wall, and reaches the target after <b>919</b> steps.",
+    15: "<b>8</b> reach the target, the fastest in 702 steps. 13 of the agents that run out of time do it in the target's room, and about half of those circle it without ever touching it.",
+    30: "<b>47</b> reach the target, the fastest in 470 steps. Of the 40 that crash, 29 crash in the second room.",
+    299: "<b>26</b> reach the target and the fittest needs only 319 steps. Half of those 26 take 324 steps or fewer: they are near-copies of one genome. More agents crash than in generation 30, and Results explains why.",
+  }} />
+</Figure>
+
+## Architecture
+
+### Sense, think, act, fifty times a second
+
+The world is continuous. Positions are doubles, an agent is a disc with a radius of 0.3, and the simulation
+moves in fixed steps of 0.02 s. On every step, every agent does the same thing, and the whole of it is one
+function:
+
+<CodeBlock file="src/model/world/Agent.cpp" meta="C++" start={58} highlight={[64, 67, 70, 73, 80]} code={`
+SimStatus Agent::step(const World& world) {
+    if (!alive) {
+        return lastStatus;
+    }
+
+    // 1. Skeniramo okolinu pomocu svih senzora
+    lastScan = scanEnvironment(world);
+
+    // 2. Pretvaramo rezultate senzora u ulaz za neuronsku mrezu
+    const Matrix inputs = encodeInputs(lastScan, world);
+
+    // 3. Neuronska mreza donosi odluku
+    const Matrix output = brain.forward(inputs);
+
+    // 4. Pretvaramo izlaz mreze u konkretnu akciju
+    const AgentAction action = decodeOutput(output);
+
+    // 5. Primena akcije: rotacija headinga i nova brzina
+    applyAction(action);
+
+    // 6. Pokusaj pomeranja, sa proverom kolizije duz celog pomeraja
+    const Vec2 desiredPosition = position + velocity * Params::timeStep;
+    const MoveResult move = resolveMovement(world, position, desiredPosition);
+
+    position = move.position;
+    lastStatus = move.status;
+
+    // Svaki status osim Ongoing je terminalan: sudar, izlazak iz sveta
+    // ili dolazak do cilja. Koji je od njih — Episode izvodi iz ove
+    // povratne vrednosti.
+    if (move.status != SimStatus::Ongoing) {
+        alive = false;
+    }
+
+    return move.status;
+`} />
+
+The agent **senses** with seven rays spread over the 180° in front of it, each up to 6 units long. **It
+thinks** with one pass through the network. **It acts** by turning (at most π rad/s) and setting a speed
+between 0 and 10 units/s. Then it tries to move, and the move is checked for collisions along the whole
+way, in sub-steps of at most 0.1 units. Figure 02 runs this function on the best genome the run produced,
+with everything visible.
+
+<Figure n="02" caption="The fittest agent of generation 299 driving in your browser at half speed. Left: its seven rays and its path. Right: the network on the same step, with the input values, a colour for every activation, and edges that get brighter with the signal they carry. This is a TypeScript copy of <code>Agent::step</code> running the real genome. On 800 test episodes it ended exactly like the C++ code (see Results). Click the map to drop the agent somewhere it never started from in training.">
+  <AgentBrain genome={best.genome} generation={best.generation} />
+</Figure>
+
+The program is split into small parts, and only the last one knows that a window exists:
+
+- **World** holds the arena, the obstacles and the target. It answers two questions: is this disc free
+  (signed distance functions for circles and rectangles) and how far does this ray go before it hits
+  something (exact ray–circle and ray–box intersection, no stepping along the ray).
+- **Agent** is a policy plus physics: sensors, a `NeuralNetwork`, position, heading and velocity. Nothing
+  else.
+- **Episode** is one agent's attempt. It counts steps, remembers how close the agent ever got to the target
+  and decides the outcome: reached, crashed or out of time.
+- **Simulation** runs a hundred episodes side by side, one step at a time, and records the statistics when
+  the last one ends.
+- **GeneticAlgorithm** turns a hundred (genome, fitness) pairs into a hundred new genomes. **Trainer** does
+  this at every generation boundary and writes the new genomes back into the agents.
+- **Statistics** keeps one row per generation and writes it to CSV. **HeadlessRunner** runs a whole
+  experiment from a JSON config without opening a window. **Program** is the SFML window with the ImGui
+  panels.
+
+## Implementation
+
+### From rays to two numbers
+
+The network never sees coordinates. It sees what is around it, where the target is compared to its own
+nose, and how fast it is going:
+
+<CodeBlock file="src/model/world/Agent.cpp" meta="C++" start={112} highlight={[122, 127, 131, 135]} code={`
+Matrix Agent::encodeInputs(
+    const std::vector<ScanResult>& scanResults,
+    const World& world
+) const {
+
+    Matrix input(static_cast<std::size_t>(Params::inputSize), 1);
+
+    std::size_t index = 0;
+
+    for (const auto& result : scanResults) {
+        input(index++, 0) = 1.0 - result.distance;
+    }
+
+    const Vec2 toTarget = world.getTarget().getPosition() - position;
+
+    const double angleToGoal = std::atan2(heading.cross(toTarget), heading.dot(toTarget));
+
+
+    const double initialDistance = (world.getTarget().getPosition() - startPosition).length();
+    const double distanceToGoal = (initialDistance > 1e-9)
+        ? std::min(1.0, toTarget.length() / initialDistance)
+        : 0.0;
+
+    const double normalizedSpeed = std::min(1.0, velocity.length() / Params::maxSpeed);
+
+    input(index++, 0) = std::sin(angleToGoal);
+    input(index++, 0) = std::cos(angleToGoal);
+    input(index++, 0) = distanceToGoal;
+    input(index++, 0) = normalizedSpeed;
+
+    assert(index == static_cast<std::size_t>(Params::inputSize));
+
+    return input;
+}
+`} />
+
+A ray reports a distance between 0 and 1, and the input is `1 − distance`, so a wall right in front is 1
+and empty space is 0: the network gets a strong signal exactly when it matters. The angle to the target goes
+in as a sine and a cosine, so "just left of straight behind" and "just right of straight behind" are close
+numbers instead of −179° and +179°. The distance is measured against the starting distance, so 1 means "as
+far as when I started".
+
+On the way out, both numbers are already in [−1, 1] because every layer uses `tanh`:
+
+<CodeBlock file="src/model/world/Agent.cpp" meta="C++" start={152} highlight={[157, 159]} code={`
+AgentAction Agent::decodeOutput(const Matrix& output) const {
+
+    const double turnOutput = std::clamp(output(0, 0), -1.0, 1.0);
+    const double speedOutput = std::clamp(output(1, 0), -1.0, 1.0);
+
+    const double turnAngle = turnOutput * Params::maxTurnRate * Params::timeStep;
+
+    const double speed = 0.5 * (speedOutput + 1.0) * Params::maxSpeed;
+
+    return AgentAction{
+        turnAngle,
+        speed
+    };
+}
+`} />
+
+The speed is mapped to [0, 10], so an agent can stop but can never reverse. That one line shapes a lot of
+what it learns: to get out of a dead end, it has to turn around.
+
+### A genome is just the weights in a row
+
+The genetic algorithm never sees a network. It sees a `std::vector<double>`: every layer's weights, row by
+row, then its biases. For this network that is <M tex="11 \cdot 10 + 10 + 10 \cdot 4 + 4 + 4 \cdot 2 + 2 = 174" /> numbers.
+
+<CodeBlock file="src/core/neural/NeuralNetwork.cpp" meta="C++" start={52} highlight={[57, 61, 67]} code={`
+std::vector<double> NeuralNetwork::getParameters() const {
+    std::vector<double> result;
+    result.reserve(getParameterCount());
+
+    // za svaki layer, prvo weights pa biases
+    for (const auto& layer : layers) {
+        const Matrix& weights = layer.getWeights();
+        for (std::size_t i = 0; i < weights.getRows(); i++) {
+            for (std::size_t j = 0; j < weights.getCols(); j++) {
+                result.push_back(weights(i,j));
+            }
+        }
+        const Matrix& biases = layer.getBiases();
+        for (std::size_t i = 0; i < biases.getRows(); i++) {
+            for (std::size_t j = 0; j < biases.getCols(); j++) {
+                result.push_back(biases(i,j));
+            }
+        }
+    }
+    assert(result.size() == getParameterCount());
+    return result;
+}
+`} />
+
+`setParameters` does the same in reverse. At the end of a generation the trainer reads a hundred of these
+vectors, hands them to the genetic algorithm, and writes the hundred new ones back into the same agents.
+The weights of generation 0 come from a normal distribution with standard deviation <M tex="\sqrt{2 / n_\text{in}}" />,
+and the biases start at zero.
+
+### One generation, bred
+
+Producing the next generation takes four ideas, and figure 03 follows each of them on the real step from
+generation 15 to 16.
+
+<Figure n="03" caption="The real step from generation 15 to 16, followed for one child. Every number here was logged while calling the project's own <code>Selection</code>, <code>Crossover</code> and <code>Mutation</code> in the order <code>nextGeneration</code> calls them, and the logged run produced exactly the same 100 genomes as the real one. The genome cards draw the 174 genes as the network's three weight matrices.">
+  <BreedStep data={breed} />
+</Figure>
+
+<CodeBlock file="src/learning/evolution/GeneticAlgorithm.cpp" meta="C++" start={14} highlight={[22, 29, 30, 32, 33]} code={`
+std::vector<std::vector<double> > GeneticAlgorithm::nextGeneration(const std::vector<Individual> &current) const {
+    std::vector<std::vector<double> > nextGen;
+    nextGen.reserve(current.size());
+
+    std::vector<Individual> sorted = current;
+    std::sort(sorted.begin(), sorted.end(),
+        [](const Individual& a, const Individual& b) { return a.fitness > b.fitness; });
+
+    std::size_t eliteCount = std::round(current.size() * elitismRatio);
+
+    for (std::size_t i = 0; i < eliteCount; i++) {
+        nextGen.push_back(std::move(sorted[i].genome));
+    }
+
+    while (nextGen.size() < current.size()) {
+        const Individual& a = selection.tournament(current);
+        const Individual& b = selection.tournament(current);
+
+        std::vector<double> child = Crossover::uniform(a.genome, b.genome);
+        mutation.mutate(child);
+        nextGen.push_back(std::move(child));
+    }
+    return nextGen;
+}
+`} />
+
+**Elitism** copies the best 8 % unchanged, so the best solution found so far can never be lost. Because the
+world is deterministic, a copied elite drives exactly the same way in the next generation, and the best
+fitness never goes down from one generation to the next.
+
+**Tournament selection** picks a parent by drawing five agents at random and keeping the fittest:
+
+<CodeBlock file="src/learning/evolution/Selection.cpp" meta="C++" start={12} highlight={[19, 22]} code={`
+const Individual& Selection::tournament(const std::vector<Individual> &population) const{
+    assert(!population.empty());
+    assert(tournamentSize >= 1 && tournamentSize <= static_cast<int>(population.size()));
+
+    const Individual* best = nullptr;
+
+    for (int i = 0; i < tournamentSize; i++) {
+        int idx = Random::uniformInt(0, static_cast<int>(population.size()) - 1);
+        const Individual& candidate = population[idx];
+
+        if (!best || candidate.fitness > best->fitness) {
+            best = &candidate;
+        }
+    }
+    return *best;
+}
+`} />
+
+Only the order of the fitness values matters, never their size. The draws are independent, so the same agent
+can come up twice, and two tournaments can pick the same parent. In the step from generation 15 to 16 that
+happened three times. The child in slot 17, for example, has the agent in slot 66 as both parents, so it is
+simply a mutated copy of it.
+
+**Uniform crossover** builds the child gene by gene, flipping a fair coin for each. **Mutation** then walks
+over the child and adds Gaussian noise to roughly one gene in five:
+
+<CodeBlock file="src/learning/evolution/Mutation.cpp" meta="C++" start={13} highlight={[15, 17]} code={`
+void Mutation::mutate(std::vector<double>& genome) const {
+    for (double & gene : genome) {
+        if (!Random::bernoulli(mutationRatio)) continue;
+
+        gene += Random::normal(0, mutationStrength);
+    }
+}
+`} />
+
+With `mutationRatio` = 0.2, a child gets on average <M tex="0.2 \cdot 174 \approx 35" /> changes. The 92
+children in figure 03 got between 22 and 47, 34.7 on average. Keep that number in mind for Results.
+
+### What "better" means
+
+The whole learning signal is one number per agent per generation:
+
+<Equation n="1" tex="F = 10 \cdot \text{progress} + 0.02 \cdot \text{steps} + 1000 \cdot [\text{reached}] - 50 \cdot [\text{crashed}] + 400 \cdot \frac{1000 - \text{steps}}{1000} \cdot [\text{reached}]" />
+
+<CodeBlock file="src/learning/fitness/Fitness.cpp" meta="C++" start={6} highlight={[9, 11, 14, 15, 16]} code={`
+FitnessBreakdown fitnessBreakdown(const EpisodeResult& result, const FitnessWeights& weights) {
+    FitnessBreakdown b;
+
+    b.progress  = weights.progress * result.progress();
+    b.survival  = weights.survival * result.steps;
+    b.goal      = result.reachedTarget ? weights.goal : 0.0;
+    b.collision = result.crashed ? -weights.collision : 0.0;
+
+    if (result.reachedTarget) {
+        const double remainingFraction = static_cast<double>(result.maxSteps - result.steps) / result.maxSteps;
+        b.speed = weights.speed * remainingFraction;
+    }
+
+    return b;
+}
+`} />
+
+The terms come in a deliberate order of size. Reaching the target is worth 1000, more than anything an agent
+can collect any other way. After that comes speed: an agent that arrives in 319 steps gets 272 more than one
+that arrives on the last step. Crashing costs 50, while driving safely for the whole 20 seconds earns only 20.
+The first thing the population learns is to crash less: 96 crashes in generation 0, 75 in generation 7, and
+still nobody near the target.
+
+`progress` is the starting distance minus the closest the agent ever got. Closest, not last:
+
+<CodeBlock file="src/model/simulation/Episode.cpp" meta="C++" start={58} highlight={[63, 64]} code={`
+    const double distanceToTarget =
+        (world.getTarget().getPosition() - positionAfter).length();
+
+    // Najbolja, a ne poslednja distanca — inace se agentu isplati
+    // da se priblizi cilju pa pobegne.
+    result.bestDistanceToTarget =
+        std::min(result.bestDistanceToTarget, distanceToTarget);
+`} />
+
+That line turned out to matter more than I expected. The distance is a straight line, and this maze is not.
+Figure 04 shows what the progress term sees, and where it led the first generations.
+
+<Figure n="04" caption="The rings are straight-line distance to the target, which is all the progress term measures. For five generations the fittest agent is the same elite, and it stops exactly where the rings point: straight above the target, on the wrong side of a wall. Getting any closer means going left first, away from the target, and the score doesn't reward a single step of that detour until the agent is through it. Because progress uses the closest distance, the detour doesn't cost anything either. One agent in generation 8 made it.">
+  <TrapMap data={trap} />
+</Figure>
+
+This is a textbook **deceptive fitness function**: its slope points into a dead end. Nothing pushed the
+population out of the trap. It got out because enough random variation was still going on that one child
+happened to keep driving left.
+
+## Results
+
+### It solves the maze, every time I tried
+
+The headless runner takes a JSON config, writes it next to the results, and prints one row per generation.
+These are the first and last rows of the run in figures 01 to 04:
+
+<Terminal lines={[
+  { cmd: "./EvolutionaryNeuralAgents --headless --config configs/baseline.json --generations 300 | head -13", out: `     |                  FITNES                  |       ISHODI      |     EPIZODE     |        NAJBOLJI AGENT       |      GA PARAMETRI
+ gen |     best    mean  median   worst   stdev | reach crash  tout | maxProg avgStep |    prog  surv   goal  crash |  elit  mutR  mutS tour
+-----+------------------------------------------+-------------------+-----------------+-----------------------------+-----------------------
+   0 |    253.9    -2.1    -9.4   -47.8    47.4 |     0    96     4 |   23.39   172.6 |   233.9  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   1 |    253.9    20.7     9.6   -46.9    59.6 |     0    89    11 |   25.81   262.0 |   233.9  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   2 |    263.0    35.1    23.4   -48.3    76.7 |     0    82    18 |   26.20   364.0 |   243.0  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   3 |    286.7    36.3    12.2   -47.9    82.8 |     0    86    14 |   26.67   335.4 |   266.7  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   4 |    286.7    47.1    20.6   -48.1    93.0 |     0    82    18 |   26.67   384.9 |   266.7  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   5 |    286.7    58.8    25.6   -47.7   104.1 |     0    73    27 |   26.67   420.6 |   266.7  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   6 |    286.7    60.3    42.4   -48.1    97.9 |     0    75    25 |   26.67   458.0 |   266.7  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   7 |    286.7    62.5    14.8   -47.4   106.1 |     0    75    25 |   26.87   441.2 |   266.7  20.0    0.0    0.0 | 0.080 0.200 0.200    5
+   8 |   1511.5    80.2    28.1   -48.4   178.0 |     1    66    33 |   46.07   484.2 |   460.7  18.4 1000.0    0.0 | 0.080 0.200 0.200    5
+   9 |   1511.5    82.1    39.7   -48.6   177.4 |     1    65    34 |   46.07   510.8 |   460.7  18.4 1000.0    0.0 | 0.080 0.200 0.200    5` },
+  { cmd: "./EvolutionaryNeuralAgents --headless --config configs/baseline.json --generations 300 | tail -5", out: ` 298 |   1740.3   628.3   209.4    19.8   713.2 |    29    50    21 |   46.17   414.5 |   461.5   6.4 1000.0    0.0 | 0.080 0.200 0.200    5
+ 299 |   1740.3   575.7   208.7    42.3   692.5 |    26    59    15 |   46.17   368.0 |   461.5   6.4 1000.0    0.0 | 0.080 0.200 0.200    5
+
+Headless run zavrsen: 300 generacija (seed 42)
+Rezultati u: experiments/20261112_233903_seed42` },
+]} />
+
+Rows 3 to 7 are the trap from figure 04: the best fitness is stuck at 286.7, all of it progress and
+survival. In row 8 the goal column jumps to 1000. The `surv` column of the best agent is 0.02 × its steps, so
+it also shows the best agent getting faster: 18.4 (919 steps) in generation 8, 6.4 (319 steps) in generation
+299.
+
+The same training in the GUI, with live charts:
+
+<Media video="/media/evolutionary-neural-agents/training-gui.mp4" poster="/media/evolutionary-neural-agents/training-gui.jpg" alt="The program's window: GA parameters and fitness weights on the left, the arena in the middle with a hundred red agents and their sensor rays moving through the maze, and three charts on the right (fitness per generation, outcomes in percent, the best agent's fitness breakdown) that grow by one point at the end of every generation." n="05" caption="The real program, generations 16 to 20 of a GUI run at 4× speed. The green dot is the agent with the highest fitness so far in the current episode. The charts on the right are fed by the same statistics module that writes the CSV. I recorded it frame by frame from the program's own window with a copy of its main loop that saves every frame, and cropped the status bar. It is not the same run as figure 01 (see the note in Lessons)." dark />
+
+Figure 06 is the whole 300-generation run from its `statistics.csv`.
+
+<Figure n="06" caption="Seed 42, 300 generations, the settings in <code>configs/baseline.json</code>. The number that reaches the target peaks at 58 in generation 165 and, from generation 50 on, moves around a median of 38. The fittest agent keeps getting faster all the same: 919 steps in generation 8, 319 in generation 299. Hover for the values, or open the table.">
+  <OutcomeChart data={outcomes} />
+</Figure>
+
+One seed could be luck, so I ran ten more with identical settings. Each run takes about 25 seconds.
+
+<DataTable
+  n="01"
+  caption="Eleven headless runs of 300 generations, identical settings, different seeds. Every one of them gets out of the trap and finds a route of 313 to 397 steps; how long the trap holds varies from 8 to 43 generations."
+  head={["seed", "first to reach the target", "most that reached", "avg. reached, last 50 gens", "fittest agent at gen 299"]}
+  rows={[
+    ["42", "gen 8", "58", "35.1", "319 steps"],
+    ["1", "gen 13", "52", "38.6", "361 steps"],
+    ["2", "gen 10", "75", "62.8", "332 steps"],
+    ["3", "gen 24", "58", "38.2", "333 steps"],
+    ["4", "gen 12", "65", "44.1", "313 steps"],
+    ["5", "gen 19", "66", "36.3", "336 steps"],
+    ["6", "gen 12", "58", "34.7", "347 steps"],
+    ["7", "gen 23", "55", "40.3", "397 steps"],
+    ["8", "gen 43", "68", "53.9", "343 steps"],
+    ["9", "gen 16", "67", "31.9", "317 steps"],
+    ["10", "gen 9", "49", "40.3", "336 steps"],
+  ]}
+  highlight={[0]}
+/>
+
+### Why the population settles around 40 %
+
+Once the route is found, why don't all hundred agents take it? Once eight of them can, the elites always do. The question is what
+happens to their children, so I measured it directly: I took the fittest genome of generation 299, mutated
+it a thousand times with the project's own `Mutation` class, and let every mutant drive once from the start.
+
+<DataTable
+  n="02"
+  caption="Share of 1000 mutants of the fittest genome of generation 299 that still reach the target, for each mutation setting (fixed seed). The setting the run uses is highlighted: 60 % of the children of the best agent are broken by mutation alone, before crossover with a weaker parent makes it worse."
+  head={["mutation ratio", "σ = 0.02", "σ = 0.05", "σ = 0.10", "σ = 0.20", "σ = 0.40"]}
+  rows={[
+    ["0.05", "99.2 %", "91.7 %", "83.4 %", "68.7 %", "54.2 %"],
+    ["0.20", "94.4 %", "75.0 %", "58.7 %", "39.6 %", "19.2 %"],
+  ]}
+  highlight={[1]}
+/>
+
+39.6 % is very close to where the population settles in figure 06. The 8 elites always reach the target,
+and most children of good parents don't, because about 35 random changes to a 174-number policy that works
+are usually too many. So I trained again with gentler mutation, and with the adaptive policy I'm building
+(see Lessons):
+
+<DataTable
+  n="03"
+  caption="Ten seeds (1–10) × 300 generations for each setting. Gentle mutation keeps the solution much better once it has it, but in two runs out of ten it never left the trap: from generation 50 on, the closest any agent got to the target stayed at 20.3 units."
+  head={["setting", "runs that reached the target", "first reach", "avg. reached, last 50 gens"]}
+  rows={[
+    ["ratio 0.20, σ 0.20 (the default)", "10 / 10", "gen 9–43", "42.1"],
+    ["ratio 0.05, σ 0.10", "8 / 10", "gen 5–52", "67.2 (in the 8 that reached it)"],
+    ["0.20 / 0.20 + stagnation policy", "10 / 10", "gen 8–42", "14.6"],
+  ]}
+/>
+
+That is the trade-off of figure 04 in numbers. Strong mutation is what gets a population out of a deceptive
+trap, and the same mutation is what keeps destroying the solution afterwards.
+
+### Did it learn the maze or a route?
+
+Every agent in training starts from the same point, facing the same way, so the fittest genome could just
+be a memorised sequence of turns. It isn't quite. Started from all 49 points of a grid within 3 units of the
+usual start, it reaches the target from 48 of them, and from the usual start with all eight headings I tried
+between −1 and +1 rad. Dropped in the middle of the maze it does worse: 9 of 20 starts in the second and
+third rooms reach the target. You can try it in figure 02. It learned to react to what its rays see, just
+not well enough to find the way from anywhere.
+
+The figures on this page don't simulate anything new. A small harness linked the project's own code and
+reproduced the headless run exactly (the same `statistics.csv` byte for byte), then recorded the paths for
+figures 01 and 04 and the GA step for figure 03. Only figure 02 runs code in the browser. Its TypeScript copy
+of `Agent::step` and the C++ code drove the same **800 episodes**: the 100 genomes of generation 15 from the
+start and from three random points each, and the best genome from 400 random starting points. Every episode ended the same way after the same
+number of steps, and positions agreed to within 2 · 10⁻⁶ units. That remaining difference comes from the
+last bits of `sin`, `cos` and `tanh`, which aren't identical in the two math libraries.
+
+## Lessons
+
+### What evolving a maze driver taught me
+
+- **A score only sees what it measures.** The progress term measured straight-line distance, and that
+  alone created the trap in figure 04. Measuring the closest distance instead of the last one is a one-line
+  difference that made the detour free.
+- **Mutation is a dial between finding and keeping.** The same σ that gets every run out of the trap breaks
+  60 % of the children of a working agent. Table 03 is the exploration–exploitation trade-off as numbers
+  instead of a phrase.
+- **Make it reproducible before you make it pretty.** A fixed seed, a headless mode that runs from a JSON
+  config and saves it next to the run's CSV, and Catch2 tests in CI: none of that shows on screen, and all of
+  it is why this page has tables. Every number in them comes from a run I can repeat exactly.
+
+So, does my brain work the same way? I still can't say. What I can say is smaller and more concrete: blind
+variation plus selection is enough to find 174 numbers that drive a maze nobody explained to them, in 8 to
+43 generations. It is also wasteful. One run of 300 generations is 30,000 episodes for a single maze, and in
+the last generation 59 of the 92 children still crash.
+
+<Note kind="wrong">
+My first fix for the plateau made it worse. I added an adaptive policy (it is in my working copy and not yet
+on GitHub) that multiplies the mutation strength by 1.5 when the best fitness hasn't improved for 10
+generations and by 0.95 when it improves. It sounds right: if you are stuck, explore more. But once the maze
+is solved, the best fitness can hardly improve any more, so the policy reads "solved" as "stuck" and pushes σ
+up to its 0.6 limit. Over ten seeds the agents that reach the target in the last 50 generations fell from 42
+to 15 (table 03). Best fitness standing still and a population being stuck are two different signals, and the
+policy needs the second one.
+</Note>
+
+One more thing I found while writing this: the GUI and the headless runner don't give the same run for the
+same seed. `Program` builds the population before it calls `Random::seed`, and the headless runner seeds
+first. Both runs are reproducible on their own, which is why figure 05 shows different numbers from figure 01.
