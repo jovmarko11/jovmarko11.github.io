@@ -22,6 +22,7 @@ import RunwayQueue from "../components/content/RunwayQueue.astro";
 import ShellLab from "../components/content/ShellLab.astro";
 import PipeRoles from "../components/content/PipeRoles.astro";
 import ParseLayers from "../components/project-art/ParseLayers.astro";
+import EvolutionLoop from "../components/project-art/EvolutionLoop.astro";
 import GenerationReplay from "../components/content/GenerationReplay.astro";
 import AgentBrain from "../components/content/AgentBrain.astro";
 import BreedStep from "../components/content/BreedStep.astro";
@@ -120,6 +121,7 @@ const type = ["display-xl", "display-l", "heading-1", "heading-2", "heading-3", 
 
     <section class="sg__project">
       <Label index="09 —">Evolutionary neural agents figures</Label>
+      <EvolutionLoop />
       <GenerationReplay data={enaGens as any} src={enaGensUrl} autoplay={false} captions={Object.fromEntries(enaGens.gens.map((g) => [g.g, `Generation ${g.g}.`]))} />
       <AgentBrain genome={enaBest.genome} generation={enaBest.generation} autoplay={false} />
       <BreedStep data={enaBreed as any} autoplay={false} />

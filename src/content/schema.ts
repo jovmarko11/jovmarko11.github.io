@@ -18,7 +18,7 @@ export const STATUSES = ["shipped", "in-progress", "lost"] as const;
 /** Project colors (design tokens hue-*). Used only for the project's own content, never for UI chrome. */
 export const HUES = ["cyan", "violet", "lime", "sky", "rose", "amber"] as const;
 /** Header illustrations available in src/components/project-art/ (add the key there when you add one). */
-export const ARTS = ["parse-layers"] as const;
+export const ARTS = ["parse-layers", "evolution-loop"] as const;
 
 export type Category = (typeof CATEGORIES)[number];
 export type Status = (typeof STATUSES)[number];

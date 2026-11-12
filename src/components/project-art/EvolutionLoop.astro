@@ -1,0 +1,284 @@
+---
+/**
+ * EvolutionLoop — header art of Evolutionary Neural Agents: the genetic algorithm's loop, played
+ * on the real training run (seed 42, configs/baseline.json, project HEAD be2b3d6).
+ *
+ * For generations 0, 8, 30 and 299 in turn:
+ *   01 drive   all 100 recorded paths are replayed in the maze; the 10 × 10 grid (one cell per
+ *              agent, population order) takes each agent's outcome when its episode ends
+ *   02 score   the cells slide into fitness order (fittest top left), the best path is drawn bold
+ *   03 select  the 8 fittest get a frame (elites, copied unchanged); agents that won no
+ *              tournament, so have no child in the next generation, fade
+ *   04 breed   the other 92 cells are replaced by children, which is also why cells 0–7 of every
+ *              later generation carry the frame
+ *   ↺          the grid flicks through the real outcomes of the generations in between, then the
+ *              next shown generation starts; after 299 it starts over
+ *
+ * Data: paths from generations.json (fetched once per page, shared with <GenerationReplay>);
+ * fitness, ranks, tournament wins and every agent's outcome per generation from
+ * evolution-loop.json, logged by a harness that links the project and reproduces the headless run
+ * (checked against generations.json and outcomes.json at build time below).
+ * Without JS, or with prefers-reduced-motion, it shows generation 299 ranked by fitness.
+ */
+import gensData from "../../content/projects/evolutionary-neural-agents/generations.json";
+import gensUrl from "../../content/projects/evolutionary-neural-agents/generations.json?url";
+import loopData from "../../content/projects/evolutionary-neural-agents/evolution-loop.json";
+import outcomeRows from "../../content/projects/evolutionary-neural-agents/outcomes.json";
+import { arenaSvg, generationStaticSvg, VIEWBOX, type GenerationsFile } from "../../lib/ena-scene";
+import { SPAWN, TARGET } from "../../lib/ena-model";
+
+const SHOW = [0, 8, 30, 299];
+const PITCH = 16, CELL = 13; // grid units; the grid's viewBox is 157 × 157
+const MAX_FF = 28; // at most this many in-between generations are flicked through per gap
+
+type Row = [number, number, number, number, number, number, number];
+interface LoopFile {
+  outcomes: string[];
+  shown: { g: number; best: number; f: number[]; rank: number[]; picks: number[]; mut: number[] }[];
+}
+const file = gensData as GenerationsFile;
+const loop = loopData as LoopFile;
+const rows = outcomeRows as Row[];
+
+// ---- the three exports must describe the same run -------------------------------------------
+rows.forEach(([g, R, C, T]) => {
+  const s = loop.outcomes[g] ?? "";
+  const n = (c: string) => s.split(c).length - 1;
+  if (n("R") !== R || n("C") !== C || n("T") !== T) throw new Error(`EvolutionLoop: outcomes of generation ${g} disagree with outcomes.json`);
+});
+const shown = SHOW.map((g) => {
+  const fg = file.gens.find((x) => x.g === g);
+  const lg = loop.shown.find((x) => x.g === g);
+  if (!fg || !lg) throw new Error(`EvolutionLoop: generation ${g} is missing from generations.json or evolution-loop.json`);
+  if (fg.best !== lg.best || lg.rank[0] !== lg.best || fg.a.some((a, i) => a[0] !== loop.outcomes[g][i]))
+    throw new Error(`EvolutionLoop: generations.json and evolution-loop.json disagree on generation ${g}`);
+  const row = rows[g];
+  return {
+    g,
+    rank: lg.rank,
+    picks: lg.picks,
+    parents: lg.picks.filter((p) => p > 0).length,
+    mut: Math.round(lg.mut.reduce((a, b) => a + b, 0) / lg.mut.length),
+    bestF: row[5],
+  };
+});
+
+const ff = SHOW.slice(0, -1).map((g, i) => {
+  const next = SHOW[i + 1];
+  const step = Math.max(1, Math.ceil((next - g - 1) / MAX_FF));
+  const hs: number[] = [];
+  for (let h = g + 1; h < next; h += step) hs.push(h);
+  if (hs[hs.length - 1] !== next - 1) hs.push(next - 1);
+  return hs.map((h) => [h, loop.outcomes[h]] as [number, string]);
+});
+const fit = rows.map((r) => (r[6] ? r[4] : 0)); // steps of the fittest agent, 0 = it didn't arrive
+const payload = { k: file.k, shown, ff, fit };
+
+// ---- static state: generation 299, ranked -----------------------------------------------------
+const last = shown[shown.length - 1];
+const lastOut = loop.outcomes[last.g];
+const lastGen = file.gens.find((x) => x.g === last.g)!;
+const cells = last.rank.map((agent, p) => ({
+  o: lastOut[agent],
+  x: (p % 10) * PITCH + CELL / 2,
+  y: Math.floor(p / 10) * PITCH + CELL / 2,
+  elite: p < 8,
+}));
+const count = (s: string, c: string) => s.split(c).length - 1;
+const fitText = (steps: number) => (steps ? `${steps} steps` : "didn’t arrive");
+
+// ---- reached-per-generation strip -------------------------------------------------------------
+const CH = 30, CMAX = 60;
+const bars = rows.map(([g, R]) => (R ? `M${g + 0.1} ${CH}v${-((R / CMAX) * CH).toFixed(2)}h0.8v${((R / CMAX) * CH).toFixed(2)}z` : "")).join("");
+const pct = (gens: number) => (100 - (100 * gens) / rows.length).toFixed(2); // right inset that leaves `gens` bars lit
+const peak = rows.reduce((a, r) => (r[1] > a[1] ? r : a), rows[0]);
+
+const first = shown[0];
+const aria =
+  `Animation from the real training run, seed 42. For generations ${SHOW.join(", ")} in turn, all 100 agents drive the maze at once ` +
+  `and a 10 by 10 grid, one cell per agent, takes each agent's outcome. The grid then sorts itself by fitness, the 8 fittest are kept ` +
+  `as elites, agents that won no tournament fade out, and 92 children take the other places. In generation ${first.g}, ` +
+  `${count(loop.outcomes[first.g], "C")} agents crash and none reaches the target; in generation ${last.g}, ${count(lastOut, "R")} reach it ` +
+  `and the fittest needs ${fit[last.g]} steps.`;
+---
+
+<div class="el" data-evo-loop data-src={gensUrl} role="img" aria-label={aria}>
+  <script is:inline type="application/json" data-loop set:html={JSON.stringify(payload)} />
+
+  <div class="el__top">
+    <span class="el__gen">gen <b data-gen>{String(last.g).padStart(3, "0")}</b></span>
+    <span class="el__seed">seed 42 · real run</span>
+  </div>
+
+  <ol class="el__stages" aria-hidden="true">
+    <li data-stage="drive"><span>01</span>drive</li>
+    <li data-stage="score"><span>02</span>score</li>
+    <li data-stage="select"><span>03</span>select</li>
+    <li data-stage="breed"><span>04</span>breed</li>
+    <li data-stage="loop" class="el__loop" title="next generation">↺</li>
+  </ol>
+  <p class="el__cap" data-cap aria-hidden="true">generation {last.g}, ranked by fitness</p>
+
+  <div class="el__body" aria-hidden="true">
+    <svg class="el__map" viewBox={VIEWBOX} focusable="false">
+      <g set:html={arenaSvg({ labels: false })} />
+      <g class="el-layer" data-layer set:html={generationStaticSvg(file, lastGen)} />
+      <text class="el__label" x={SPAWN.x + 2} y={SPAWN.y + 0.8}>start</text>
+      <text class="el__label" x={TARGET.x} y={TARGET.y - 2.6} text-anchor="middle">target</text>
+    </svg>
+
+    <div class="el__side">
+      <p class="el__gridcap">1 cell = 1 agent</p>
+      <svg class="el__grid" viewBox="0 0 157 157" focusable="false" data-grid>
+        {cells.map((c) => (
+          <g class:list={["el-c", `is-${c.o}`, { "is-elite": c.elite }]} transform={`translate(${c.x} ${c.y})`}>
+            <rect class="el-c__box" x={-CELL / 2} y={-CELL / 2} width={CELL} height={CELL} rx="2" />
+          </g>
+        ))}
+      </svg>
+      <dl class="el__legend">
+        <div><dt><i class="el__sw is-R"></i>reached</dt><dd data-n="R">{count(lastOut, "R")}</dd></div>
+        <div><dt><i class="el__sw is-C"></i>crashed</dt><dd data-n="C">{count(lastOut, "C")}</dd></div>
+        <div><dt><i class="el__sw is-T"></i>out of time</dt><dd data-n="T">{count(lastOut, "T")}</dd></div>
+        <div><dt><i class="el__sw is-best"></i>fittest</dt><dd data-n="fit">{fitText(fit[last.g])}</dd></div>
+      </dl>
+    </div>
+  </div>
+
+  <div class="el__curve" aria-hidden="true">
+    <div class="el__curve-head"><span>reached the target, per generation</span><span class="el__peak">peak {peak[1]} · gen {peak[0]}</span></div>
+    <div class="el__strip">
+      <svg viewBox={`0 0 ${rows.length} ${CH + 6}`} preserveAspectRatio="none" focusable="false">
+        <line class="el__base" x1="0" x2={rows.length} y1={CH} y2={CH} />
+        <path class="el__bars" d={bars} />
+        {SHOW.map((g) => <line class="el__tick" x1={g + 0.5} x2={g + 0.5} y1={CH + 2} y2={CH + 6} />)}
+      </svg>
+      <div class="el__lit" data-lit style={`clip-path: inset(0 ${pct(last.g + 1)}% 0 0)`}>
+        <svg viewBox={`0 0 ${rows.length} ${CH + 6}`} preserveAspectRatio="none" focusable="false"><path class="el__bars el__bars--lit" d={bars} /></svg>
+      </div>
+      <span class="el__cursor" data-cursor style={`left: ${(100 * (last.g + 0.5)) / rows.length}%`}></span>
+    </div>
+  </div>
+</div>
+
+<style>
+  .el {
+    --el-R: var(--project, var(--accent));
+    --el-C: color-mix(in srgb, var(--danger) 82%, var(--surface));
+    --el-T: var(--hue-sky);
+    display: flex; flex-direction: column; gap: 8px;
+    max-width: 460px;
+    padding: 14px; border: 1px solid var(--line-strong);
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    font-family: var(--font-mono); font-size: 12px; line-height: 18px; color: var(--ink-muted);
+  }
+
+  .el__top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+  .el__gen { color: var(--ink-muted); }
+  .el__gen b { color: var(--ink); font-weight: 700; font-size: 15px; font-variant-numeric: tabular-nums; }
+  .el__seed { font-size: 11px; color: var(--ink-faint); }
+
+  .el__stages { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .el__stages li {
+    display: inline-flex; align-items: baseline; gap: 5px; padding: 2px 7px; border-radius: var(--radius-s);
+    color: var(--ink-faint); font-weight: 700; white-space: nowrap; transition: color 0.25s, background-color 0.25s;
+  }
+  .el__stages li span { font-weight: 400; opacity: 0.75; }
+  .el__stages li.is-on { color: var(--project); background: var(--project-soft); }
+  .el__stages .el__loop { margin-left: auto; font-weight: 400; }
+
+  .el p.el__cap { margin: 0; max-width: none; min-height: 18px; color: var(--ink); font-size: 12px; line-height: 18px; }
+
+  .el__body { display: grid; grid-template-columns: minmax(0, 1fr) 168px; gap: 14px; align-items: start; }
+  .el__map { display: block; width: 100%; height: auto; }
+  .el__side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .el p.el__gridcap { margin: 0; max-width: none; font-size: 10px; line-height: 14px; color: var(--ink-faint); }
+  .el__grid { display: block; width: 100%; height: auto; overflow: visible; }
+
+  .el__legend { margin: 6px 0 0; display: grid; gap: 2px; font-size: 11px; line-height: 16px; }
+  .el__legend div { display: flex; justify-content: space-between; gap: 8px; padding-bottom: 2px; border-bottom: 1px solid var(--line); }
+  .el__legend dt { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .el__legend dd { margin: 0; color: var(--ink); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .el__sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+  .el__sw.is-R { background: var(--el-R); }
+  .el__sw.is-C { background: var(--el-C); }
+  .el__sw.is-T { background: var(--el-T); }
+  .el__sw.is-best { height: 3px; border-radius: 2px; background: var(--ink-muted); }
+
+  /* arena (markup comes from lib/ena-scene.ts and the player, hence :global) */
+  .el :global(.ena-floor) { fill: var(--surface); }
+  .el :global(.ena-grid) { stroke: var(--line); stroke-width: 0.08; fill: none; }
+  .el :global(.ena-border) { fill: none; stroke: var(--line-strong); stroke-width: 0.25; }
+  .el :global(.ena-wall), .el :global(.ena-obst) { fill: color-mix(in srgb, var(--ink) 26%, var(--surface)); }
+  .el :global(.ena-target) { fill: var(--ink); }
+  .el :global(.ena-target-ring) { fill: none; stroke: var(--ink); stroke-width: 0.18; stroke-dasharray: 0.5 0.4; }
+  .el :global(.ena-spawn) { fill: none; stroke: var(--ink); stroke-width: 0.22; }
+  .el__label { font-family: var(--font-mono); font-size: 2.3px; fill: var(--ink-muted); paint-order: stroke; stroke: var(--surface); stroke-width: 0.9px; stroke-linejoin: round; }
+
+  .el-layer { transition: opacity 0.6s; }
+  .el-layer.is-gone { opacity: 0; }
+  .el :global(.gr-trail) {
+    fill: none; stroke: var(--ink-faint); stroke-width: 0.2; stroke-opacity: 0.55; stroke-linecap: round; stroke-linejoin: round;
+    transition: stroke 0.35s, stroke-opacity 0.45s, stroke-width 0.45s;
+  }
+  .el :global(.gr-trail.is-R:not(.is-live)) { stroke: var(--el-R); }
+  .el :global(.gr-trail.is-C:not(.is-live)) { stroke: var(--el-C); }
+  .el :global(.gr-trail.is-T:not(.is-live)) { stroke: var(--el-T); }
+  .el :global(.gr-trail--best) { stroke-width: 0.55; stroke-opacity: 1; }
+  .el :global(.el-layer.is-ranked .gr-trail) { stroke-opacity: 0.22; }
+  .el :global(.el-layer.is-ranked .gr-trail.is-best) { stroke-width: 0.6; stroke-opacity: 1; }
+  .el :global(.el-layer.is-selected .gr-trail) { stroke-opacity: 0.1; }
+  .el :global(.el-layer.is-selected .gr-trail.is-elite) { stroke-opacity: 0.85; }
+  .el :global(.el-layer.is-selected .gr-trail.is-best) { stroke-opacity: 1; }
+  .el :global(.gr-dot) { fill: var(--ink); stroke: var(--surface); stroke-width: 0.15; }
+  .el :global(.gr-end) { stroke-width: 0.3; stroke-linecap: round; }
+  .el :global(.gr-end.is-C) { stroke: var(--el-C); fill: none; }
+  .el :global(.gr-end.is-T) { stroke: var(--el-T); fill: var(--surface); stroke-width: 0.25; }
+  .el :global(.gr-end.is-R) { fill: var(--el-R); stroke: var(--surface); stroke-width: 0.15; }
+  .el :global(.gr-end.is-hidden), .el :global(.gr-dot.is-hidden) { display: none; }
+  .el :global(.el-layer.is-selected .gr-end) { opacity: 0.25; }
+
+  /* population grid */
+  .el-c__box { fill: transparent; stroke: var(--line-strong); stroke-width: 1; transition: fill 0.25s, stroke 0.25s; transform-box: fill-box; transform-origin: center; }
+  .el-c { transition: opacity 0.4s; }
+  .el-c.is-R .el-c__box { fill: var(--el-R); stroke: var(--el-R); }
+  .el-c.is-C .el-c__box { fill: var(--el-C); stroke: var(--el-C); }
+  .el-c.is-T .el-c__box { fill: var(--el-T); stroke: var(--el-T); }
+  .el-c.is-elite .el-c__box { stroke: var(--ink); stroke-width: 2; }
+  .el-c.is-dim { opacity: 0.15; }
+  .el.is-snap .el-c__box, .el.is-snap .el-c { transition: none; }
+  .el-c.is-pop .el-c__box { animation: el-pop 0.35s ease-out; }
+  @keyframes el-pop { from { transform: scale(0.2); } }
+
+  /* reached-per-generation strip */
+  .el__curve { display: flex; flex-direction: column; gap: 4px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .el__curve-head { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; line-height: 14px; color: var(--ink-faint); }
+  .el__strip { position: relative; height: 36px; }
+  .el__strip svg { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
+  .el__lit { position: absolute; inset: 0; }
+  .el__cursor { position: absolute; top: 0; height: calc(100% * 30 / 36); width: 0; border-left: 1.5px solid var(--ink); transform: translateX(-0.75px); }
+  .el__base { stroke: var(--line-strong); stroke-width: 1; vector-effect: non-scaling-stroke; }
+  .el__bars { fill: var(--line-strong); }
+  .el__bars--lit { fill: var(--el-R); }
+  .el__tick { stroke: var(--ink-faint); stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+  @container screen (max-width: 640px) {
+    .el { padding: 12px; }
+    .el__stages { gap: 2px; }
+    .el__stages li { padding: 2px 5px; font-size: 11px; gap: 3px; }
+    .el p.el__cap { min-height: 36px; font-size: 11px; }
+    .el__body { grid-template-columns: minmax(0, 1fr) 136px; gap: 10px; }
+    .el__legend { font-size: 10px; line-height: 14px; }
+    .el p.el__gridcap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .el__peak { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .el-layer, .el-c, .el-c__box, .el__stages li { transition: none; }
+    .el-c.is-pop .el-c__box { animation: none; }
+  }
+</style>
+
+<script>
+  import { initEvolutionLoop } from "../../scripts/evolution-loop";
+  document.querySelectorAll<HTMLElement>("[data-evo-loop]").forEach(initEvolutionLoop);
+</script>
